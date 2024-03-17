@@ -27,7 +27,7 @@ Coming Soon
 Install the required python libraries
 ```console
 pip install hopsworks
-pip install bytewax
+pip install bytewax==0.17.2
 ```
 
 ## Clone tutorials repository
