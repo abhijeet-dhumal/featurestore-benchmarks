@@ -1,0 +1,46 @@
+{
+  "store": "dynamodb",
+  "timestamp": "2026-02-23T16:31:45.511893",
+  "config": {
+    "features": [
+      50
+    ],
+    "entities": [
+      1,
+      10,
+      100
+    ]
+  },
+  "latency": [
+    {
+      "store": "dynamodb",
+      "num_features": 50,
+      "num_entities": 1,
+      "p50": 7.2600540006533265,
+      "p95": 7.954381006129552,
+      "p99": 7.954381006129552,
+      "mean": 7.231649901586934,
+      "sla_pass": true
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 50,
+      "num_entities": 10,
+      "p50": 11.830212999484502,
+      "p95": 13.275783996505197,
+      "p99": 13.275783996505197,
+      "mean": 11.99031405049027,
+      "sla_pass": true
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 50,
+      "num_entities": 100,
+      "p50": 67.24094100354705,
+      "p95": 139.3800059959176,
+      "p99": 139.3800059959176,
+      "mean": 77.79490624998289,
+      "sla_pass": false
+    }
+  ]
+}

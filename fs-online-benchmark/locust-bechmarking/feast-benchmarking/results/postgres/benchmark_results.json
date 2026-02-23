@@ -1,0 +1,46 @@
+{
+  "store": "postgres",
+  "timestamp": "2026-02-23T16:31:21.334853",
+  "config": {
+    "features": [
+      50
+    ],
+    "entities": [
+      1,
+      10,
+      100
+    ]
+  },
+  "latency": [
+    {
+      "store": "postgres",
+      "num_features": 50,
+      "num_entities": 1,
+      "p50": 3.865913997287862,
+      "p95": 4.135609000513796,
+      "p99": 4.135609000513796,
+      "mean": 3.886810400217655,
+      "sla_pass": true
+    },
+    {
+      "store": "postgres",
+      "num_features": 50,
+      "num_entities": 10,
+      "p50": 6.281041001784615,
+      "p95": 10.74897000216879,
+      "p99": 10.74897000216879,
+      "mean": 6.81811014910636,
+      "sla_pass": true
+    },
+    {
+      "store": "postgres",
+      "num_features": 50,
+      "num_entities": 100,
+      "p50": 41.87735299638007,
+      "p95": 103.00614899460925,
+      "p99": 103.00614899460925,
+      "mean": 47.08554050012026,
+      "sla_pass": false
+    }
+  ]
+}

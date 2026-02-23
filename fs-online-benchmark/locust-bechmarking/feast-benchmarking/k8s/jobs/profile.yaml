@@ -1,0 +1,307 @@
+# Profiling benchmark job - measures time spent in each Feast function
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-benchmark-profile
+  namespace: feast-test
+  labels:
+    app: feast-benchmark
+    store: profile
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: feast-benchmark
+        store: profile
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: benchmark
+          image: python:3.11-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export HOME=/tmp
+              export PATH=$HOME/.local/bin:$PATH
+              echo "=== Installing dependencies ==="
+              pip install --user -q feast 'redis>=4.0.0' 'psycopg[binary,pool]>=3.0.0' pandas numpy
+              
+              echo "=== Creating profiling script ==="
+              cat > /tmp/profile_benchmark.py << 'SCRIPT'
+              import cProfile
+              import io
+              import json
+              import os
+              import pstats
+              import time
+              from datetime import datetime, timedelta
+              from functools import wraps
+              from typing import Dict, List
+              
+              import pandas as pd
+              from feast import Entity, FeatureStore, FeatureView, Field, FileSource
+              from feast.types import Float64
+              
+              # Timing storage
+              TIMINGS: Dict[str, List[float]] = {}
+              
+              def timed(name):
+                  """Decorator to time function calls."""
+                  def decorator(func):
+                      @wraps(func)
+                      def wrapper(*args, **kwargs):
+                          start = time.perf_counter()
+                          result = func(*args, **kwargs)
+                          elapsed = (time.perf_counter() - start) * 1000
+                          if name not in TIMINGS:
+                              TIMINGS[name] = []
+                          TIMINGS[name].append(elapsed)
+                          return result
+                      return wrapper
+                  return decorator
+              
+              def create_repo(store_type: str, store_config: dict) -> str:
+                  import shutil
+                  repo_path = "/tmp/feast_repo"
+                  shutil.rmtree(repo_path, ignore_errors=True)
+                  os.makedirs(repo_path, exist_ok=True)
+                  
+                  config = f"""
+              project: benchmark
+              registry: {repo_path}/registry.db
+              provider: local
+              online_store:
+                type: {store_type}
+              """
+                  for k, v in store_config.items():
+                      config += f"  {k}: {v}\n"
+                  
+                  with open(f"{repo_path}/feature_store.yaml", "w") as f:
+                      f.write(config)
+                  return repo_path
+              
+              def create_data_and_features(repo_path: str, num_features: int, num_rows: int = 1000):
+                  data = {"user_id": [f"user_{i}" for i in range(num_rows)]}
+                  for i in range(num_features):
+                      data[f"f{i}"] = [float(i * j) for j in range(num_rows)]
+                  df = pd.DataFrame(data)
+                  df["event_timestamp"] = pd.Timestamp.now()
+                  
+                  parquet_path = f"{repo_path}/data.parquet"
+                  df.to_parquet(parquet_path)
+                  
+                  source = FileSource(path=parquet_path, timestamp_field="event_timestamp")
+                  entity = Entity(name="user_id", join_keys=["user_id"])
+                  
+                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(num_features)]
+                  fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
+                  
+                  return entity, fv
+              
+              def patch_feast_for_profiling():
+                  """Monkey-patch Feast functions to add timing."""
+                  import feast.infra.online_stores.helpers as helpers
+                  import feast.feature_store as fs_module
+                  
+                  # Patch online_read
+                  if hasattr(helpers, 'get_online_store_from_config'):
+                      pass  # Already patched or different version
+                  
+                  # We'll use cProfile instead for detailed breakdown
+              
+              def run_profile():
+                  STORES = {
+                      "sqlite": {"path": "/tmp/feast_repo/online.db"},
+                      "redis": {"connection_string": f"{os.environ.get('REDIS_HOST', 'redis')}:{os.environ.get('REDIS_PORT', '6379')}"},
+                      "postgres": {
+                          "host": os.environ.get("POSTGRES_HOST", "postgres"),
+                          "port": os.environ.get("POSTGRES_PORT", "5432"),
+                          "database": os.environ.get("POSTGRES_DATABASE", "feast"),
+                          "user": os.environ.get("POSTGRES_USER", "feast"),
+                          "password": os.environ.get("POSTGRES_PASSWORD", "feast"),
+                      }
+                  }
+                  
+                  NUM_FEATURES = 50
+                  ENTITY_COUNTS = [1, 10, 100]
+                  ITERATIONS = 10
+                  
+                  results = {}
+                  
+                  print("=" * 70)
+                  print("FEAST FUNCTION PROFILING")
+                  print("=" * 70)
+                  
+                  for store_name, store_config in STORES.items():
+                      print(f"\n{'='*70}")
+                      print(f"STORE: {store_name.upper()}")
+                      print("=" * 70)
+                      
+                      if store_name == "postgres":
+                          repo_path = create_repo(store_name, store_config)
+                      elif store_name == "redis":
+                          repo_path = create_repo(store_name, store_config)
+                      else:
+                          repo_path = create_repo(store_name, store_config)
+                      
+                      entity, fv = create_data_and_features(repo_path, NUM_FEATURES)
+                      
+                      fs = FeatureStore(repo_path=repo_path)
+                      fs.apply([entity, fv])
+                      fs.materialize(
+                          start_date=datetime.now() - timedelta(days=1),
+                          end_date=datetime.now()
+                      )
+                      
+                      feature_refs = [f"fv:f{i}" for i in range(NUM_FEATURES)]
+                      store_results = {}
+                      
+                      for num_entities in ENTITY_COUNTS:
+                          entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
+                          
+                          # Warmup
+                          for _ in range(3):
+                              fs.get_online_features(features=feature_refs, entity_rows=entity_rows)
+                          
+                          # Profile with cProfile
+                          profiler = cProfile.Profile()
+                          
+                          total_times = []
+                          for _ in range(ITERATIONS):
+                              start = time.perf_counter()
+                              profiler.enable()
+                              fs.get_online_features(features=feature_refs, entity_rows=entity_rows)
+                              profiler.disable()
+                              total_times.append((time.perf_counter() - start) * 1000)
+                          
+                          # Extract stats
+                          stats_stream = io.StringIO()
+                          stats = pstats.Stats(profiler, stream=stats_stream)
+                          stats.strip_dirs()
+                          stats.sort_stats('cumulative')
+                          
+                          # Get top functions
+                          func_times = {}
+                          for func, (cc, nc, tt, ct, callers) in stats.stats.items():
+                              filename, lineno, funcname = func
+                              # Filter to Feast-related functions
+                              if 'feast' in filename.lower() or 'online' in funcname.lower():
+                                  key = f"{funcname}"
+                                  if key not in func_times:
+                                      func_times[key] = 0
+                                  func_times[key] += ct * 1000 / ITERATIONS  # Convert to ms per call
+                          
+                          # Sort by time
+                          sorted_funcs = sorted(func_times.items(), key=lambda x: x[1], reverse=True)[:10]
+                          
+                          avg_total = sum(total_times) / len(total_times)
+                          p99_total = sorted(total_times)[-1]
+                          
+                          print(f"\n{num_entities} entities:")
+                          print(f"  Total: avg={avg_total:.1f}ms, p99={p99_total:.1f}ms")
+                          print(f"  Top functions:")
+                          
+                          breakdown = {}
+                          for func, time_ms in sorted_funcs[:5]:
+                              pct = (time_ms / avg_total) * 100 if avg_total > 0 else 0
+                              print(f"    {func:40s} {time_ms:6.1f}ms ({pct:4.1f}%)")
+                              breakdown[func] = {"time_ms": round(time_ms, 2), "pct": round(pct, 1)}
+                          
+                          store_results[num_entities] = {
+                              "avg_ms": round(avg_total, 2),
+                              "p99_ms": round(p99_total, 2),
+                              "breakdown": breakdown
+                          }
+                      
+                      results[store_name] = store_results
+                  
+                  # Summary comparison
+                  print("\n" + "=" * 70)
+                  print("SUMMARY: WHERE TIME IS SPENT")
+                  print("=" * 70)
+                  
+                  print("\n100 Entities Breakdown (ms):")
+                  print("-" * 70)
+                  
+                  headers = ["Function"] + list(results.keys())
+                  print(f"{'Function':40s}", end="")
+                  for store in results.keys():
+                      print(f" {store:>10s}", end="")
+                  print()
+                  
+                  # Collect all functions
+                  all_funcs = set()
+                  for store_data in results.values():
+                      if 100 in store_data:
+                          all_funcs.update(store_data[100].get("breakdown", {}).keys())
+                  
+                  for func in sorted(all_funcs):
+                      print(f"{func:40s}", end="")
+                      for store in results.keys():
+                          time_ms = results[store].get(100, {}).get("breakdown", {}).get(func, {}).get("time_ms", 0)
+                          print(f" {time_ms:>10.1f}", end="")
+                      print()
+                  
+                  # Save results
+                  output = {
+                      "timestamp": datetime.now().isoformat(),
+                      "config": {
+                          "features": NUM_FEATURES,
+                          "entities": ENTITY_COUNTS,
+                          "iterations": ITERATIONS
+                      },
+                      "results": results
+                  }
+                  
+                  with open("/results/profile_results.json", "w") as f:
+                      json.dump(output, f, indent=2)
+                  
+                  print(f"\nResults saved to /results/profile_results.json")
+              
+              if __name__ == "__main__":
+                  run_profile()
+              SCRIPT
+              
+              echo "=== Running profiler ==="
+              python /tmp/profile_benchmark.py
+              
+              echo "=== Results ==="
+              cat /results/profile_results.json
+          env:
+            - name: REDIS_HOST
+              value: "redis.feast-test.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: POSTGRES_HOST
+              value: "postgres.feast-test.svc.cluster.local"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DATABASE
+              value: "feast"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "4000m"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          emptyDir: {}

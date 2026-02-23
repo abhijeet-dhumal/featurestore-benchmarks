@@ -1,0 +1,5 @@
+test_type,features,entities,fvs,store,transform,p50_ms,p95_ms,p99_ms,sla_pass,online_read_pct,protobuf_pct
+latency,50,1,1,postgres,none,200.35,333.47,333.47,False,94.2,0.3
+latency,50,10,1,postgres,none,184.91,203.42,203.42,False,94.4,1.0
+latency,50,100,1,postgres,none,1410.66,2354.1,2354.1,False,98.0,1.1
+fv_scaling,10,100,1,postgres,none,348.29,377.27,377.27,False,0.0,0.0

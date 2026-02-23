@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./feast_configuration.json:/home/locust/feast_configuration.json
+      - feast_repo:/tmp/feast_benchmark
+    environment:
+      - LOCUST_MODE=master
+      - FEAST_REPO_PATH=/tmp/feast_benchmark
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+      - NUM_FEATURES=${NUM_FEATURES:-50}
+    command: >
+      -f /home/locust/locustfile_feast.py
+      --master
+      --expect-workers=32
+      --host=http://feast-server:6566
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./feast_configuration.json:/home/locust/feast_configuration.json
+      - feast_repo:/tmp/feast_benchmark
+    environment:
+      - LOCUST_MODE=worker
+      - FEAST_REPO_PATH=/tmp/feast_benchmark
+      - BATCH_SIZE=${BATCH_SIZE:-100}
+      - NUM_FEATURES=${NUM_FEATURES:-50}
+    command: >
+      -f /home/locust/locustfile_feast.py
+      --worker
+      --master-host=master
+    depends_on:
+      - master
+    deploy:
+      replicas: 32
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  feast-server:
+    image: quay.io/feastdev/feature-server:0.60.0
+    ports:
+      - "6566:6566"
+    volumes:
+      - feast_repo:/tmp/feast_benchmark
+    environment:
+      - FEAST_REPO_PATH=/tmp/feast_benchmark
+    command: ["feast", "serve", "-h", "0.0.0.0", "-p", "6566"]
+    depends_on:
+      - redis
+
+volumes:
+  feast_repo:

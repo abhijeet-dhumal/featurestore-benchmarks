@@ -1,0 +1,5 @@
+test_type,features,entities,fvs,store,transform,p50_ms,p95_ms,p99_ms,sla_pass,online_read_pct,protobuf_pct
+latency,50,1,1,dynamodb,none,161.79,212.6,212.6,False,94.7,0.2
+latency,50,10,1,dynamodb,none,342.61,376.83,376.83,False,97.1,0.5
+latency,50,100,1,dynamodb,none,418.11,826.21,826.21,False,96.2,2.0
+fv_scaling,10,100,1,dynamodb,none,182.17,334.31,334.31,False,0.0,0.0
