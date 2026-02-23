@@ -1,0 +1,144 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-benchmark-postgres
+  labels:
+    app: feast-benchmark
+    store: postgres
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: feast-benchmark
+        store: postgres
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: benchmark
+          image: python:3.11-slim
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export HOME=/tmp
+              export PATH=$HOME/.local/bin:$PATH
+              pip install --user -q feast 'psycopg[binary,pool]>=3.0.0' pandas numpy
+              
+              cat > /tmp/benchmark.py << 'EOF'
+              import json, os, statistics, time
+              from datetime import datetime, timedelta
+              from dataclasses import dataclass, asdict
+              import pandas as pd
+              from feast import Entity, FeatureStore, FeatureView, Field, FileSource
+              from feast.types import Float64
+              
+              @dataclass
+              class Result:
+                  store: str
+                  num_features: int
+                  num_entities: int
+                  p50: float
+                  p95: float
+                  p99: float
+                  mean: float
+                  sla_pass: bool
+              
+              def run():
+                  import shutil
+                  repo = "/tmp/feast_repo"
+                  shutil.rmtree(repo, ignore_errors=True)
+                  os.makedirs(repo, exist_ok=True)
+                  
+                  pg_host = os.environ.get("POSTGRES_HOST", "postgres")
+                  pg_port = os.environ.get("POSTGRES_PORT", "5432")
+                  pg_db = os.environ.get("POSTGRES_DATABASE", "feast")
+                  pg_user = os.environ.get("POSTGRES_USER", "feast")
+                  pg_pass = os.environ.get("POSTGRES_PASSWORD", "feast")
+                  
+                  with open(f"{repo}/feature_store.yaml", "w") as f:
+                      f.write(f"project: benchmark\nregistry: {repo}/registry.db\nprovider: local\nonline_store:\n  type: postgres\n  host: {pg_host}\n  port: {pg_port}\n  database: {pg_db}\n  user: {pg_user}\n  password: {pg_pass}\n")
+                  
+                  NUM_FEATURES = int(os.environ.get("FEATURES", "50"))
+                  ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,100").split(",")]
+                  ITERATIONS = int(os.environ.get("ITERATIONS", "20"))
+                  SLA = float(os.environ.get("SLA_P99_MS", "60"))
+                  
+                  data = {"user_id": [f"user_{i}" for i in range(1000)]}
+                  for i in range(NUM_FEATURES):
+                      data[f"f{i}"] = [float(i*j) for j in range(1000)]
+                  df = pd.DataFrame(data)
+                  df["event_timestamp"] = pd.Timestamp.now()
+                  df.to_parquet(f"{repo}/data.parquet")
+                  
+                  source = FileSource(path=f"{repo}/data.parquet", timestamp_field="event_timestamp")
+                  entity = Entity(name="user_id", join_keys=["user_id"])
+                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(NUM_FEATURES)]
+                  fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
+                  
+                  fs = FeatureStore(repo_path=repo)
+                  fs.apply([entity, fv])
+                  fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
+                  
+                  features = [f"fv:f{i}" for i in range(NUM_FEATURES)]
+                  results = []
+                  
+                  print("="*70)
+                  print(f"POSTGRES BENCHMARK ({pg_host}:{pg_port})")
+                  print("="*70)
+                  
+                  for n in ENTITIES:
+                      rows = [{"user_id": f"user_{i}"} for i in range(n)]
+                      for _ in range(3): fs.get_online_features(features=features, entity_rows=rows)
+                      
+                      times = []
+                      for _ in range(ITERATIONS):
+                          start = time.perf_counter()
+                          fs.get_online_features(features=features, entity_rows=rows)
+                          times.append((time.perf_counter()-start)*1000)
+                      times.sort()
+                      
+                      r = Result("postgres", NUM_FEATURES, n, times[len(times)//2], times[int(len(times)*0.95)], times[-1], statistics.mean(times), times[-1]<SLA)
+                      results.append(r)
+                      status = "PASS" if r.sla_pass else "FAIL"
+                      print(f"{n}e: p50={r.p50:.1f}ms p99={r.p99:.1f}ms [{status}]")
+                  
+                  os.makedirs("/results/postgres", exist_ok=True)
+                  with open("/results/postgres/benchmark_results.json", "w") as f:
+                      json.dump({"store":"postgres","timestamp":datetime.now().isoformat(),"latency":[asdict(r) for r in results]}, f, indent=2)
+                  print(f"\nSaved: /results/postgres/benchmark_results.json")
+              
+              if __name__ == "__main__": run()
+              EOF
+              
+              python /tmp/benchmark.py
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results

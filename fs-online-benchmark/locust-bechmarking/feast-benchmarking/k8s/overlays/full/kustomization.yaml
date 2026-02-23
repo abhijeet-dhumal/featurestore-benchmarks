@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: feast-benchmark
+
+resources:
+  - ../../base
+  - ../../stores
+  # Jobs are NOT included here - they're applied separately after stores are ready
+
+# Full benchmark: 200 features, extended entity range, more iterations
+configMapGenerator:
+  - name: benchmark-config
+    behavior: merge
+    literals:
+      - FEATURES=200
+      - ENTITIES=1,10,50,100,200,500,1000
+      - ITERATIONS=50
+      - WARMUP=10
+      - SLA_P99_MS=60
+      - SLA_THROUGHPUT_RPH=3000000
+      - REDIS_HOST=redis.feast-benchmark.svc.cluster.local
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=postgres.feast-benchmark.svc.cluster.local
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=feast

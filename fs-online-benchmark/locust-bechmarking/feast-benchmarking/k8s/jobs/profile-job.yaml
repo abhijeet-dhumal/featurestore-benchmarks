@@ -1,0 +1,239 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-benchmark-profile
+  labels:
+    app: feast-benchmark
+    component: profile
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: feast-benchmark
+        component: profile
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: benchmark
+          image: python:3.11-slim
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_DEFAULT_REGION
+                  optional: true
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export HOME=/tmp
+              export PATH=$HOME/.local/bin:$PATH
+              pip install --user -q 'feast[aws,postgres]' 'psycopg[binary,pool]>=3.0.0' 'redis>=4.0.0' aiobotocore pandas numpy
+              
+              cat > /tmp/deep_profile.py << 'DEEP_EOF'
+              #!/usr/bin/env python3
+              """Deep profiling of Feast online feature retrieval."""
+              import cProfile, pstats, io, json, os, shutil, statistics, time
+              from datetime import datetime, timedelta
+              from typing import Dict, List, Any
+              import pandas as pd
+              from feast import Entity, FeatureStore, FeatureView, Field, FileSource
+              from feast.types import Float64
+              
+              def create_repo(repo_path: str, store_type: str, config: Dict) -> str:
+                  shutil.rmtree(repo_path, ignore_errors=True)
+                  os.makedirs(repo_path, exist_ok=True)
+                  
+                  online_store_yaml = ""
+                  if store_type == "sqlite":
+                      online_store_yaml = f"type: sqlite\n  path: {repo_path}/online.db"
+                  elif store_type == "redis":
+                      online_store_yaml = f"type: redis\n  connection_string: {config['redis_host']}:{config['redis_port']}"
+                  elif store_type == "postgres":
+                      online_store_yaml = f"type: postgres\n  host: {config['pg_host']}\n  port: {config['pg_port']}\n  database: {config['pg_db']}\n  user: {config['pg_user']}\n  password: {config['pg_pass']}"
+                  elif store_type == "dynamodb":
+                      online_store_yaml = f"type: dynamodb\n  region: {config['aws_region']}"
+                  
+                  with open(f"{repo_path}/feature_store.yaml", "w") as f:
+                      f.write(f"project: profile_{store_type}\nregistry: {repo_path}/registry.db\nprovider: local\nonline_store:\n  {online_store_yaml}\n")
+                  
+                  return repo_path
+              
+              def setup_features(fs: FeatureStore, repo_path: str, num_features: int = 50):
+                  data = {"user_id": [f"user_{i}" for i in range(1000)]}
+                  for i in range(num_features):
+                      data[f"f{i}"] = [float(i*j) for j in range(1000)]
+                  df = pd.DataFrame(data)
+                  df["event_timestamp"] = pd.Timestamp.now()
+                  df.to_parquet(f"{repo_path}/data.parquet")
+                  
+                  source = FileSource(path=f"{repo_path}/data.parquet", timestamp_field="event_timestamp")
+                  entity = Entity(name="user_id", join_keys=["user_id"])
+                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(num_features)]
+                  fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
+                  
+                  fs.apply([entity, fv])
+                  fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
+                  return [f"fv:f{i}" for i in range(num_features)]
+              
+              def extract_breakdown(stats: pstats.Stats) -> Dict[str, float]:
+                  breakdown = {}
+                  patterns = {
+                      "get_online_features": ["get_online_features"],
+                      "online_read": ["online_read"],
+                      "_prepare_entities": ["_prepare_entities_to_read_from_online_store"],
+                      "_get_online_request_context": ["_get_online_request_context"],
+                      "protobuf_convert": ["to_proto", "from_proto", "SerializeToString", "ParseFromString"],
+                      "serialize_entity_key": ["serialize_entity_key"],
+                  }
+                  
+                  stats_dict = {}
+                  for (filename, line, func), (cc, nc, tt, ct, callers) in stats.stats.items():
+                      stats_dict[func] = stats_dict.get(func, 0) + tt * 1000
+                  
+                  for key, funcs in patterns.items():
+                      total = sum(stats_dict.get(f, 0) for f in funcs)
+                      if total > 0:
+                          breakdown[key] = total
+                  
+                  return breakdown
+              
+              def extract_online_read_breakdown(stats: pstats.Stats, store_type: str) -> Dict[str, float]:
+                  breakdown = {}
+                  patterns = {
+                      "sqlite": [("execute", "SQL execute"), ("fetchall", "Fetch results")],
+                      "redis": [("pipeline", "Pipeline create"), ("execute", "Pipeline execute"), ("mget", "MGET command"), ("read_response", "Read response")],
+                      "postgres": [("execute", "SQL execute"), ("fetchall", "Fetch results"), ("send", "Network send"), ("recv", "Network recv")],
+                      "dynamodb": [("batch_get_item", "BatchGetItem API"), ("_make_request", "Make request"), ("_send", "HTTP send"), ("_read", "HTTP read")],
+                  }
+                  
+                  store_patterns = patterns.get(store_type, [])
+                  for (filename, line, func), (cc, nc, tt, ct, callers) in stats.stats.items():
+                      for pattern, label in store_patterns:
+                          if pattern in func.lower():
+                              breakdown[label] = breakdown.get(label, 0) + tt * 1000
+                  
+                  return breakdown
+              
+              def profile_store(store_type: str, config: Dict, iterations: int = 20) -> Dict:
+                  repo_path = f"/tmp/profile_{store_type}"
+                  create_repo(repo_path, store_type, config)
+                  
+                  fs = FeatureStore(repo_path=repo_path)
+                  features = setup_features(fs, repo_path)
+                  entity_rows = [{"user_id": f"user_{i}"} for i in range(10)]
+                  
+                  for _ in range(3):
+                      fs.get_online_features(features=features, entity_rows=entity_rows)
+                  
+                  profiler = cProfile.Profile()
+                  times = []
+                  
+                  for _ in range(iterations):
+                      start = time.perf_counter()
+                      profiler.enable()
+                      fs.get_online_features(features=features, entity_rows=entity_rows)
+                      profiler.disable()
+                      times.append((time.perf_counter() - start) * 1000)
+                  
+                  stats = pstats.Stats(profiler)
+                  
+                  result = {
+                      "store": store_type,
+                      "latency": {
+                          "p50": sorted(times)[len(times)//2],
+                          "p99": sorted(times)[-1],
+                          "mean": statistics.mean(times)
+                      },
+                      "breakdown": extract_breakdown(stats),
+                      "online_read_breakdown": extract_online_read_breakdown(stats, store_type)
+                  }
+                  
+                  return result
+              
+              def main():
+                  config = {
+                      "redis_host": os.environ.get("REDIS_HOST", "redis"),
+                      "redis_port": os.environ.get("REDIS_PORT", "6379"),
+                      "pg_host": os.environ.get("POSTGRES_HOST", "postgres"),
+                      "pg_port": os.environ.get("POSTGRES_PORT", "5432"),
+                      "pg_db": os.environ.get("POSTGRES_DATABASE", "feast"),
+                      "pg_user": os.environ.get("POSTGRES_USER", "feast"),
+                      "pg_pass": os.environ.get("POSTGRES_PASSWORD", "feast"),
+                      "aws_region": os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")
+                  }
+                  
+                  stores = ["sqlite", "redis", "postgres"]
+                  if os.environ.get("AWS_ACCESS_KEY_ID"):
+                      stores.append("dynamodb")
+                  
+                  results = {"timestamp": datetime.now().isoformat(), "stores": {}}
+                  
+                  print("="*70)
+                  print("DEEP PROFILING - FEAST ONLINE FEATURE RETRIEVAL")
+                  print("="*70)
+                  
+                  for store in stores:
+                      print(f"\nProfiling {store}...")
+                      try:
+                          results["stores"][store] = profile_store(store, config)
+                          print(f"  p50={results['stores'][store]['latency']['p50']:.1f}ms")
+                      except Exception as e:
+                          print(f"  ERROR: {e}")
+                          results["stores"][store] = {"error": str(e)}
+                  
+                  os.makedirs("/results/profile", exist_ok=True)
+                  with open("/results/profile/deep_profile_results.json", "w") as f:
+                      json.dump(results, f, indent=2)
+                  
+                  print(f"\n{'='*70}")
+                  print("Results saved to /results/profile/deep_profile_results.json")
+              
+              if __name__ == "__main__":
+                  main()
+              DEEP_EOF
+              
+              python /tmp/deep_profile.py
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results

@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-benchmark-collect
+  labels:
+    app: feast-benchmark
+    component: collector
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: feast-benchmark
+        component: collector
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: collector
+          image: python:3.11-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              cat > /tmp/collect.py << 'EOF'
+              import json, os
+              from datetime import datetime
+              from pathlib import Path
+              
+              results = {
+                  "timestamp": datetime.now().isoformat(),
+                  "stores": {}
+              }
+              
+              base = Path("/results")
+              for store_dir in base.iterdir():
+                  if store_dir.is_dir() and store_dir.name != "combined":
+                      result_file = store_dir / "benchmark_results.json"
+                      if result_file.exists():
+                          with open(result_file) as f:
+                              results["stores"][store_dir.name] = json.load(f)
+                          print(f"Collected: {store_dir.name}")
+              
+              # Also collect profile results
+              profile_file = base / "profile" / "deep_profile_results.json"
+              if profile_file.exists():
+                  with open(profile_file) as f:
+                      results["profile"] = json.load(f)
+                  print("Collected: profile")
+              
+              combined_dir = base / "combined"
+              combined_dir.mkdir(exist_ok=True)
+              
+              with open(combined_dir / "all_results.json", "w") as f:
+                  json.dump(results, f, indent=2)
+              
+              print(f"\nCombined results: /results/combined/all_results.json")
+              print(f"Stores: {list(results['stores'].keys())}")
+              EOF
+              
+              python /tmp/collect.py
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results

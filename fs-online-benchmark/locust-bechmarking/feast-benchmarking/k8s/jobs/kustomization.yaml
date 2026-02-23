@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - sqlite-job.yaml
+  - redis-job.yaml
+  - postgres-job.yaml
+  - dynamodb-job.yaml
+  - profile-job.yaml
+  - collect-results.yaml
