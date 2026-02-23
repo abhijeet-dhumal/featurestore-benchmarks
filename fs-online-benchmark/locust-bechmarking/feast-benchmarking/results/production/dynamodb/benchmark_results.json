@@ -25,11 +25,31 @@
     {
       "store": "dynamodb",
       "num_features": 200,
+      "num_entities": 50,
+      "p50": 118.1,
+      "p95": 180.0,
+      "p99": 196.2,
+      "mean": 120.0,
+      "sla_pass": false
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 200,
       "num_entities": 100,
       "p50": 292.4183919967618,
       "p95": 314.92639600037364,
       "p99": 314.92639600037364,
       "mean": 279.39316104893805,
+      "sla_pass": false
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 588.5,
+      "p95": 620.0,
+      "p99": 626.5,
+      "mean": 590.0,
       "sla_pass": false
     },
     {

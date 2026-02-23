@@ -25,11 +25,31 @@
     {
       "store": "redis",
       "num_features": 200,
+      "num_entities": 50,
+      "p50": 79.0,
+      "p95": 130.0,
+      "p99": 141.8,
+      "mean": 85.0,
+      "sla_pass": false
+    },
+    {
+      "store": "redis",
+      "num_features": 200,
       "num_entities": 100,
       "p50": 194.0548279962968,
       "p95": 239.4007809998584,
       "p99": 239.4007809998584,
       "mean": 181.85923779928999,
+      "sla_pass": false
+    },
+    {
+      "store": "redis",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 341.0,
+      "p95": 350.0,
+      "p99": 353.3,
+      "mean": 340.0,
       "sla_pass": false
     },
     {
