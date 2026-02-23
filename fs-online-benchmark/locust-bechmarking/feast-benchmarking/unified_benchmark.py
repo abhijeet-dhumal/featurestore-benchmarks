@@ -850,7 +850,7 @@ Environment Variables (alternative to CLI args):
     # Preset configs
     # =========================================================================
     preset_group = parser.add_argument_group('Presets')
-    preset_group.add_argument("--preset", choices=["quick", "full", "production"],
+    preset_group.add_argument("--preset", choices=["quick", "full", "production", "statefarm", "cross-region", "compression"],
                              help="Use preset configuration (overrides dimension args)")
     
     # =========================================================================
@@ -922,14 +922,22 @@ Environment Variables (alternative to CLI args):
     # Test Dimensions
     # =========================================================================
     dim_group = parser.add_argument_group('Test Dimensions')
-    dim_group.add_argument("--features", nargs='+', type=int, default=[50, 200],
-                          help="Feature counts to test (default: 50 200)")
-    dim_group.add_argument("--entities", nargs='+', type=int, default=[1, 10, 50, 100, 500],
-                          help="Entity counts to test (default: 1 10 50 100 500)")
-    dim_group.add_argument("--fv-counts", nargs='+', type=int, default=[1, 10, 50],
-                          help="Feature View counts to test (default: 1 10 50)")
+    dim_group.add_argument("--features", nargs='+', type=int, default=[10, 50, 100, 200],
+                          help="Feature counts to test (default: 10 50 100 200)")
+    dim_group.add_argument("--entities", nargs='+', type=int, default=[1, 10, 50, 100, 200, 500],
+                          help="Entity counts to test (default: 1 10 50 100 200 500) - includes State Farm 50,200")
+    dim_group.add_argument("--fv-counts", nargs='+', type=int, default=[1, 10, 50, 100],
+                          help="Feature View counts to test (default: 1 10 50 100)")
+    dim_group.add_argument("--feature-services", nargs='+', type=int, default=[1],
+                          help="Feature Service counts to test (default: 1)")
     dim_group.add_argument("--features-per-fv", type=int, default=10,
                           help="Features per Feature View in FV scaling test (default: 10)")
+    dim_group.add_argument("--transformations", nargs='+', default=["none"],
+                          choices=["none", "python", "pandas"],
+                          help="Transformation modes to test (default: none)")
+    dim_group.add_argument("--compression", default="none",
+                          choices=["none", "gzip"],
+                          help="HTTP compression mode (default: none)")
     
     # =========================================================================
     # Test Control
@@ -1000,24 +1008,69 @@ Environment Variables (alternative to CLI args):
         args.features = [50]
         args.entities = [1, 10, 100]
         args.fv_counts = [1]
+        args.feature_services = [1]
+        args.transformations = ["none"]
+        args.compression = "none"
         args.iterations = 10
         args.throughput_duration = 5
         args.throughput_workers = [1, 5]
         args.skip_transformations = True
     elif args.preset == "full":
+        # All dimensions from TRACKER.md
         args.features = [10, 50, 100, 200]
-        args.entities = [1, 10, 50, 100, 500]
+        args.entities = [1, 10, 50, 100, 200, 500]
         args.fv_counts = [1, 10, 50, 100]
+        args.feature_services = [1, 5, 10]
+        args.transformations = ["none", "python", "pandas"]
+        args.compression = "none"
         args.iterations = 20
         args.throughput_duration = 30
         args.throughput_workers = [1, 5, 10, 20]
     elif args.preset == "production":
         args.features = [200]
-        args.entities = [1, 10, 100, 500]
+        args.entities = [1, 10, 50, 100, 200, 500]  # Includes State Farm 50, 200
         args.fv_counts = [1, 10, 50, 100]
+        args.feature_services = [1, 5, 10]
+        args.transformations = ["none", "python", "pandas"]
+        args.compression = "none"
         args.iterations = 30
         args.throughput_duration = 60
         args.throughput_workers = [1, 5, 10, 20, 50]
+    elif args.preset == "statefarm":
+        # State Farm exact SLA requirements: 60ms p99, 3M/hour
+        args.features = [200]
+        args.entities = [50, 200]  # State Farm entity counts
+        args.fv_counts = [1]
+        args.feature_services = [1]
+        args.transformations = ["none"]
+        args.compression = "none"
+        args.iterations = 50
+        args.warmup = 10
+        args.throughput_duration = 60
+        args.throughput_workers = [10, 20, 50]
+        args.sla_p99_ms = 60.0
+        args.sla_throughput_rph = 3_000_000
+    elif args.preset == "cross-region":
+        # Cross-region latency test (DynamoDB)
+        args.features = [200]
+        args.entities = [1, 10, 50, 100]
+        args.fv_counts = [1]
+        args.feature_services = [1]
+        args.transformations = ["none"]
+        args.compression = "none"
+        args.iterations = 30
+        args.throughput_duration = 30
+        args.throughput_workers = [10, 20]
+    elif args.preset == "compression":
+        # Compression impact test
+        args.features = [200]
+        args.entities = [50, 200, 500]
+        args.fv_counts = [1]
+        args.feature_services = [1]
+        args.transformations = ["none"]
+        args.compression = "gzip"
+        args.iterations = 30
+        args.throughput_duration = 30
     
     # =========================================================================
     # Build store config

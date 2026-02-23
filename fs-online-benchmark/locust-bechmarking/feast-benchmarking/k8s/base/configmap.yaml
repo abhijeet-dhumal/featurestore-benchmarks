@@ -5,13 +5,24 @@ metadata:
   labels:
     app.kubernetes.io/name: feast-benchmark
 data:
-  # Test dimensions - Production scale
-  FEATURES: "200"
-  ENTITIES: "1,10,100,500"
+  # Test dimensions - from TRACKER.md
+  # Features: 10, 50, 100, 200 (prod: 200)
+  FEATURES: "10,50,100,200"
+  # Entities: 1, 10, 50, 100, 200, 500 (State Farm: 50, 200)
+  ENTITIES: "1,10,50,100,200,500"
+  # Feature Views: 1, 10, 50, 100+
+  FV_COUNTS: "1,10,50,100"
+  # Feature Services: 1, 5, 10
+  FEATURE_SERVICES: "1,5,10"
+  # Transformations: none, python, pandas
+  TRANSFORMATIONS: "none,python,pandas"
+  # Compression: none, gzip
+  COMPRESSION: "none"
+  
   ITERATIONS: "20"
   WARMUP: "5"
   
-  # SLA targets
+  # SLA targets (State Farm)
   SLA_P99_MS: "60"
   SLA_THROUGHPUT_RPH: "3000000"
   
