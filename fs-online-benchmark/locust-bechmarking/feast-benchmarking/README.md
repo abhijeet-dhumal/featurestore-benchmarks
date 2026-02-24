@@ -77,35 +77,110 @@ feast-benchmarking/
 
 ## Prerequisites
 
-### Kubernetes Cluster
+- OpenShift/Kubernetes cluster with `oc` or `kubectl` CLI configured
+- Python 3.11+
+- AWS credentials (for DynamoDB benchmarks only)
+
+---
+
+## Complete Setup Guide
+
+### Step 1: Clone the Repository
 
 ```bash
-# Verify cluster connection
-oc cluster-info
-
-# Create namespace and infrastructure
-oc apply -k k8s/base
-oc apply -k k8s/stores
+git clone -b perf-online-feat https://github.com/abhijeet-dhumal/featurestore-benchmarks.git
+cd featurestore-benchmarks/fs-online-benchmark/locust-bechmarking/feast-benchmarking
 ```
 
-### AWS Credentials (for DynamoDB)
+### Step 2: Set Up Local Python Environment
 
 ```bash
-# Create secret
-oc create secret generic aws-credentials \
-    -n feast-benchmark \
-    --from-literal=AWS_ACCESS_KEY_ID=<key> \
-    --from-literal=AWS_SECRET_ACCESS_KEY=<secret> \
-    --from-literal=AWS_DEFAULT_REGION=<region>
-```
-
-### Local Environment
-
-```bash
-# Python 3.11+ required
+# Create virtual environment
 python3 -m venv .venv
+
+# Install dependencies
 ./.venv/bin/pip install feast matplotlib numpy pandas
 ```
+
+### Step 3: Verify Kubernetes Access
+
+```bash
+# Check cluster connection
+oc cluster-info
+
+# Or with kubectl
+kubectl cluster-info
+```
+
+### Step 4: Deploy Infrastructure on Kubernetes
+
+```bash
+# Create namespace and base resources (PVC, ConfigMaps)
+oc apply -k k8s/base
+
+# Deploy Redis and PostgreSQL
+oc apply -k k8s/stores
+
+# Wait for pods to be ready
+oc wait --for=condition=ready pod -l app=redis -n feast-benchmark --timeout=120s
+oc wait --for=condition=ready pod -l app=postgres -n feast-benchmark --timeout=120s
+
+# Verify deployments
+oc get pods -n feast-benchmark
+```
+
+### Step 5: Configure AWS Credentials (DynamoDB Only)
+
+```bash
+# Skip this step if not benchmarking DynamoDB
+oc create secret generic aws-credentials \
+    -n feast-benchmark \
+    --from-literal=AWS_ACCESS_KEY_ID=<your-key> \
+    --from-literal=AWS_SECRET_ACCESS_KEY=<your-secret> \
+    --from-literal=AWS_DEFAULT_REGION=us-east-1
+```
+
+### Step 6: Run the Automated Benchmark
+
+```bash
+# Full benchmark (all 4 stores)
+./run_full_benchmark.sh
+
+# Or specific stores only
+./run_full_benchmark.sh --stores "redis postgres"
+
+# Preview commands without executing
+./run_full_benchmark.sh --dry-run --verbose
+```
+
+### Step 7: View Results
+
+```bash
+# Results are saved to:
+ls -la results/sqlite/benchmark_results.json
+ls -la results/redis/benchmark_results.json
+ls -la results/postgres/benchmark_results.json
+ls -la results/dynamodb/benchmark_results.json
+
+# Charts are generated in:
+ls -la results/charts/
+```
+
+---
+
+## What the Script Does
+
+The `run_full_benchmark.sh` script automates the entire process:
+
+1. **Validates prerequisites** - checks cluster access, namespace, Python env
+2. **Cleans up old jobs** - removes previous benchmark jobs
+3. **Creates benchmark jobs** - one K8s Job per store (Redis, Postgres, DynamoDB)
+4. **Runs SQLite locally** - SQLite doesn't need K8s infrastructure
+5. **Waits for completion** - monitors job status until done or timeout
+6. **Collects results** - copies JSON results from PVC to local `results/` dir
+7. **Generates charts** - creates 10 PNG visualizations in `results/charts/`
+
+---
 
 ## Benchmark Configuration
 
@@ -147,14 +222,20 @@ All benchmarks run with these optimizations:
 
 ### Generated Charts
 
-After running benchmarks, charts are saved to `results/charts/`:
+After running benchmarks, 10 charts are saved to `results/charts/`:
 
-- `01_latency_comparison.png` - P99 latency by entity count
-- `02_scaling_behavior.png` - Scaling curves
-- `03_bottleneck_breakdown.png` - Time breakdown
-- `04_sla_compliance.png` - SLA pass/fail
-- `05_sla_boundary.png` - SLA boundary analysis
-- `06_statefarm_sla.png` - State Farm requirements
+| Chart | Description |
+|-------|-------------|
+| `01_latency_by_entities.png` | P99 latency grouped by entity count |
+| `02_scaling_curves.png` | Log-log scaling behavior |
+| `03_store_ranking.png` | Store ranking at key entity counts |
+| `04_time_breakdown.png` | Stacked bar: where time is spent |
+| `05_sla_gap_analysis.png` | Multiplier vs 60ms target |
+| `06_executive_summary.png` | 4-panel summary |
+| `07_production_sla.png` | Production SLA analysis with annotations |
+| `08_time_distribution.png` | Donut charts by component |
+| `09_online_read_breakdown.png` | Internal online_read() timing |
+| `10_optimization_targets.png` | Potential savings per fix |
 
 ## Manual Commands
 
