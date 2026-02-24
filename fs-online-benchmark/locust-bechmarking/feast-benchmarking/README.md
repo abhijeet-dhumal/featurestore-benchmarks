@@ -1,309 +1,227 @@
-# Feast Performance Benchmark Suite
+# Feast Online Store Benchmark Suite
 
-Comprehensive benchmark framework for evaluating Feast online feature serving performance.
+Performance benchmarking framework for Feast online stores (SQLite, Redis, PostgreSQL, DynamoDB).
 
-**Target SLAs:**
-- p99 Latency: **60ms**
-- Throughput: **3M requests/hour**
+## Quick Start
+
+```bash
+# Run all stores with defaults
+./run_full_benchmark.sh
+
+# Dry run to see commands
+./run_full_benchmark.sh --dry-run --verbose
+```
 
 ## Directory Structure
 
 ```
 feast-benchmarking/
-├── README.md                     # This file
-├── requirements.txt              # Python dependencies
-├── run-benchmarks.sh             # One-command in-cluster orchestrator
-│
-├── unified_benchmark.py          # Local benchmark script
-├── generate_charts.py            # Comparison chart generator (4 charts)
-├── generate_profile_charts.py    # Profile chart generator (4 charts)
-├── benchmark_config.py           # Configuration presets
-│
-├── common/                       # Shared utilities
-│   ├── __init__.py
-│   └── stop_watch.py
-│
-├── k8s/                          # Kubernetes manifests (Kustomize)
-│   ├── base/                     # Base resources
-│   │   ├── kustomization.yaml
-│   │   ├── namespace.yaml
-│   │   ├── results-pvc.yaml      # Shared PVC for results
-│   │   └── configmap.yaml        # Benchmark settings
-│   │
-│   ├── stores/                   # Online store deployments
-│   │   ├── kustomization.yaml
-│   │   ├── redis.yaml
-│   │   └── postgres.yaml
-│   │
-│   ├── jobs/                     # Benchmark jobs
-│   │   ├── kustomization.yaml
-│   │   ├── sqlite-job.yaml       # SQLite benchmark
-│   │   ├── redis-job.yaml        # Redis benchmark
-│   │   ├── postgres-job.yaml     # PostgreSQL benchmark
-│   │   ├── dynamodb-job.yaml     # DynamoDB benchmark
-│   │   ├── profile-job.yaml      # Deep profiling
-│   │   └── collect-results.yaml  # Results aggregator
-│   │
-│   ├── overlays/                 # Environment-specific configs
-│   │   ├── quick/                # Quick (10 iterations)
-│   │   └── full/                 # Full (50 iterations)
-│   │
-│   └── legacy/                   # Old non-kustomize manifests
-│
-├── results/                      # Benchmark results
-│   ├── cluster/                  # In-cluster benchmark results
-│   │   ├── sqlite/
-│   │   ├── redis/
-│   │   ├── postgres/
-│   │   ├── dynamodb/
-│   │   ├── profile/
-│   │   └── combined/             # Aggregated results
-│   └── comparison/               # Generated charts
-│
-└── deprecated/                   # Legacy scripts
+├── run_full_benchmark.sh     # Main entry point - runs all benchmarks
+├── unified_benchmark.py      # Python benchmark implementation
+├── generate_charts.py        # Chart generation from results
+├── k8s/                      # Kubernetes deployment
+│   ├── base/                 # Base kustomize configs
+│   ├── jobs/                 # Benchmark job definitions
+│   ├── overlays/             # Environment-specific configs
+│   └── stores/               # Redis/Postgres deployments
+└── results/                  # Benchmark results
+    ├── sqlite/
+    ├── redis/
+    ├── postgres/
+    ├── dynamodb/
+    └── charts/               # Generated PNG charts
 ```
 
-## Quick Start
+## Usage
 
-### 1. Setup
+### Full Benchmark (All Stores)
 
 ```bash
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+./run_full_benchmark.sh
 ```
 
-### 2. Run Benchmarks
+### Specific Stores Only
 
 ```bash
-# SQLite (local, no dependencies)
-python unified_benchmark.py --preset quick --store sqlite --output results/sqlite
-
-# Redis (requires Redis server)
-python unified_benchmark.py --preset quick \
-    --store redis \
-    --redis-host localhost \
-    --redis-port 6379 \
-    --output results/redis
-
-# DynamoDB (requires AWS credentials)
-python unified_benchmark.py --preset quick \
-    --store dynamodb \
-    --dynamodb-region eu-west-1 \
-    --aws-access-key-id AKIAXXXX \
-    --aws-secret-access-key XXXXXXXX \
-    --output results/dynamodb
-
-# PostgreSQL (requires PostgreSQL server)
-python unified_benchmark.py --preset quick \
-    --store postgres \
-    --postgres-host localhost \
-    --postgres-port 5432 \
-    --postgres-database feast \
-    --postgres-user feast \
-    --postgres-password feast123 \
-    --output results/postgres
+./run_full_benchmark.sh --stores "redis postgres"
 ```
 
-### 3. Generate Comparison Charts
+### Custom Configuration
 
 ```bash
-python generate_charts.py \
-    --dirs results/sqlite results/redis results/dynamodb \
-    --names sqlite redis dynamodb \
-    --output results/comparison
+./run_full_benchmark.sh \
+    --stores "sqlite redis postgres dynamodb" \
+    --features 200 \
+    --entities "1 10 50 100 200 500" \
+    --iterations 100 \
+    --warmup 10 \
+    --namespace feast-benchmark
 ```
 
-This generates 4 curated charts optimized for sharing:
-- `01_latency_comparison.png` - P99 latency grouped bars with SLA line
-- `02_scaling_behavior.png` - Min to max entity scaling (slope chart)
-- `03_bottleneck_breakdown.png` - Time breakdown waterfall
-- `04_sla_compliance.png` - SLA pass/fail bullet chart
+### All Options
 
-## Presets
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--stores` | `"sqlite redis postgres dynamodb"` | Stores to benchmark |
+| `--namespace` | `feast-benchmark` | Kubernetes namespace |
+| `--features` | `200` | Number of features |
+| `--entities` | `"1 10 50 100 200 500"` | Entity counts to test |
+| `--iterations` | `100` | Iterations per test |
+| `--warmup` | `10` | Warmup iterations |
+| `--timeout` | `900` | Job timeout (seconds) |
+| `--output-dir` | `results` | Results directory |
+| `--skip-k8s` | `false` | Run SQLite locally only |
+| `--skip-charts` | `false` | Skip chart generation |
+| `--dry-run` | `false` | Preview commands |
+| `--verbose` | `false` | Enable debug output |
 
-| Preset | Description | Duration | Use Case |
-|--------|-------------|----------|----------|
-| `quick` | Minimal test matrix | ~2 min | Quick validation |
-| `full` | Complete matrix | ~30 min | Full analysis |
-| `production` | Production config | ~60 min | Production validation |
+## Prerequisites
 
-## CLI Reference
+### Kubernetes Cluster
 
-Run `python unified_benchmark.py --help` for full options. Key arguments:
+```bash
+# Verify cluster connection
+oc cluster-info
 
-**Store Selection:**
-- `--store {sqlite,redis,dynamodb,postgres}` - Online store type
-
-**Redis:**
-- `--redis-host`, `--redis-port`, `--redis-password`, `--redis-ssl`
-
-**DynamoDB:**
-- `--dynamodb-region`, `--aws-access-key-id`, `--aws-secret-access-key`
-
-**PostgreSQL:**
-- `--postgres-host`, `--postgres-port`, `--postgres-database`, `--postgres-user`, `--postgres-password`
-
-**Test Dimensions:**
-- `--features N [N ...]` - Feature counts (default: 50 200)
-- `--entities N [N ...]` - Entity counts (default: 1 10 50 100 500)
-- `--fv-counts N [N ...]` - Feature View counts (default: 1 10 50)
-- `--iterations N` - Iterations per test (default: 20)
-
-**Skip Tests:**
-- `--skip-latency`, `--skip-fv-scaling`, `--skip-transformations`, `--skip-throughput`
-
-**SLA Targets:**
-- `--sla-p99-ms MS` - p99 latency target (default: 60)
-- `--sla-throughput-rph RPH` - Throughput target (default: 3000000)
-
-## Output
-
-### In-Cluster Results
-
+# Create namespace and infrastructure
+oc apply -k k8s/base
+oc apply -k k8s/stores
 ```
-results/cluster/
-├── sqlite/benchmark_results.json
-├── redis/benchmark_results.json
-├── postgres/benchmark_results.json
-├── dynamodb/benchmark_results.json
-├── profile/deep_profile_results.json
-└── combined/all_results.json     # Aggregated from all stores
+
+### AWS Credentials (for DynamoDB)
+
+```bash
+# Create secret
+oc create secret generic aws-credentials \
+    -n feast-benchmark \
+    --from-literal=AWS_ACCESS_KEY_ID=<key> \
+    --from-literal=AWS_SECRET_ACCESS_KEY=<secret> \
+    --from-literal=AWS_DEFAULT_REGION=<region>
 ```
+
+### Local Environment
+
+```bash
+# Python 3.11+ required
+python3 -m venv .venv
+./.venv/bin/pip install feast matplotlib numpy pandas
+```
+
+## Benchmark Configuration
+
+### Optimizations Applied
+
+All benchmarks run with these optimizations:
+
+| Optimization | Setting | Purpose |
+|--------------|---------|---------|
+| Registry Cache | `cache_ttl_seconds: 0` | Infinite cache |
+| Serialization | `entity_key_serialization_version: 3` | Latest format |
+| Registry Pre-warm | `fs.refresh_registry()` | Pre-populate cache |
+| DynamoDB Pool | `max_pool_connections: 200` | Connection reuse |
+| DynamoDB Retry | `retry_mode: adaptive` | Intelligent retry |
+
+### Test Matrix
+
+| Dimension | Values |
+|-----------|--------|
+| Features | 200 |
+| Entities | 1, 10, 50, 100, 200, 500 |
+| Stores | SQLite, Redis, PostgreSQL, DynamoDB |
+| Iterations | 100 |
+| Warmup | 10 |
+
+## Results
+
+### Latest Benchmark (200 features, p99 latency)
+
+| Entities | SQLite | Redis | Postgres | DynamoDB | SLA (60ms) |
+|----------|--------|-------|----------|----------|------------|
+| 1 | 15ms | **15ms** | 60ms | 22ms | ✅ |
+| 10 | 93ms | **74ms** | 80ms | 116ms | ❌ |
+| 50 | 166ms | **142ms** | 157ms | 192ms | ❌ |
+| 100 | 254ms | **202ms** | 354ms | 311ms | ❌ |
+| 500 | 1104ms | **989ms** | 1322ms | 1438ms | ❌ |
+
+**Ranking:** Redis > SQLite > Postgres > DynamoDB
 
 ### Generated Charts
 
-**Comparison charts** (`generate_charts.py`):
-```
-results/comparison/
-├── 01_latency_comparison.png     # P99 latency by entity count
-├── 02_scaling_behavior.png       # Scaling from min to max entities
-├── 03_bottleneck_breakdown.png   # Request time breakdown
-└── 04_sla_compliance.png         # SLA pass/fail status
-```
+After running benchmarks, charts are saved to `results/charts/`:
 
-**Profile charts** (`generate_profile_charts.py` with `--profile`):
-```
-results/comparison/
-├── 05_high_level_breakdown.png   # Time by Feast component
-├── 06_online_read_breakdown.png  # Store-specific internals
-├── 07_optimization_targets.png   # Potential savings
-└── 08_time_distribution.png      # Pie charts per store
-```
+- `01_latency_comparison.png` - P99 latency by entity count
+- `02_scaling_behavior.png` - Scaling curves
+- `03_bottleneck_breakdown.png` - Time breakdown
+- `04_sla_compliance.png` - SLA pass/fail
+- `05_sla_boundary.png` - SLA boundary analysis
+- `06_statefarm_sla.png` - State Farm requirements
 
-### Local Benchmark Output
+## Manual Commands
 
-```
-results/<store>/
-├── benchmark_results.json        # Raw results (JSON)
-├── benchmark_summary.csv         # Summary table (CSV)
-└── benchmark_report.md           # Human-readable report
-```
-
-## Fully Automated Benchmarks
-
-**One command runs everything and generates charts:**
+### Run Individual Store
 
 ```bash
-# Production scale (200 features × 500 entities)
-./run-benchmarks.sh production
-
-# Quick validation (50 features × 100 entities)
-./run-benchmarks.sh quick
-
-# Full analysis (200 features × 1000 entities)
-./run-benchmarks.sh full
-
-# Skip DynamoDB (no AWS credentials needed)
-./run-benchmarks.sh production --skip-dynamodb
-
-# Regenerate charts only (from existing results)
-./run-benchmarks.sh --charts-only
-
-# Clean up all resources
-./run-benchmarks.sh --cleanup
-```
-
-### What It Does Automatically
-
-1. **Deploys infrastructure** - Namespace, NFS PVC, ConfigMap
-2. **Deploys stores** - Redis, PostgreSQL (waits until ready)
-3. **Copies AWS credentials** - From `feast-test` namespace if available
-4. **Runs benchmarks** - SQLite, Redis, PostgreSQL, DynamoDB, Profiling
-5. **Waits for completion** - Monitors all jobs
-6. **Copies results** - From cluster PVC to local `results/<overlay>/`
-7. **Generates charts** - All 8 comparison and profile charts
-
-### Overlays
-
-| Overlay | Features | Entities | Iterations | Duration |
-|---------|----------|----------|------------|----------|
-| `quick` | 50 | 1,10,100 | 10 | ~3 min |
-| `production` | 200 | 1,10,100,500 | 20 | ~10 min |
-| `full` | 200 | 1-1000 | 50 | ~30 min |
-
-### Output
-
-```
-results/
-├── production/           # Benchmark results by overlay
-│   ├── sqlite/
-│   ├── redis/
-│   ├── postgres/
-│   ├── dynamodb/
-│   └── profile/
-└── comparison/           # Generated charts (all 8)
-    ├── 01_latency_comparison.png
-    ├── 02_scaling_behavior.png
-    ├── 03_bottleneck_breakdown.png
-    ├── 04_sla_compliance.png
-    ├── 05_high_level_breakdown.png
-    ├── 06_online_read_breakdown.png
-    ├── 07_optimization_targets.png
-    └── 08_time_distribution.png
-```
-
-### Prerequisites
-
-- `kubectl` configured with cluster access
-- `nfs-csi` StorageClass (or modify `k8s/base/results-pvc.yaml`)
-- Python 3 (for chart generation)
-- For DynamoDB: `aws-credentials` secret in `feast-test` namespace
-
-### Manual Kustomize (if needed)
-
-```bash
-# Deploy infrastructure only
-kubectl apply -k k8s/overlays/production
-
-# Apply jobs manually
-kubectl apply -f k8s/jobs/sqlite-job.yaml -n feast-benchmark
-kubectl apply -f k8s/jobs/redis-job.yaml -n feast-benchmark
-# etc.
-```
-
-## Environment Variables
-
-All store configs can be set via environment variables:
-
-```bash
-# AWS/DynamoDB
-export AWS_ACCESS_KEY_ID=AKIAXXXX
-export AWS_SECRET_ACCESS_KEY=XXXXXXXX
-export AWS_DEFAULT_REGION=us-east-1
+# SQLite
+oc create -f k8s/jobs/sqlite-job.yaml -n feast-benchmark
 
 # Redis
-export REDIS_HOST=localhost
-export REDIS_PORT=6379
-export REDIS_PASSWORD=mypassword
+oc create -f k8s/jobs/redis-job.yaml -n feast-benchmark
 
 # PostgreSQL
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_DATABASE=feast
-export POSTGRES_USER=feast
-export POSTGRES_PASSWORD=feast123
+oc create -f k8s/jobs/postgres-job.yaml -n feast-benchmark
+
+# DynamoDB
+oc create -f k8s/jobs/dynamodb-job.yaml -n feast-benchmark
+```
+
+### Fetch Results
+
+```bash
+# Create results reader pod
+oc run results-reader -n feast-benchmark --image=busybox --restart=Never \
+    --overrides='{"spec":{"containers":[{"name":"results-reader","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"name":"results","mountPath":"/results"}]}],"volumes":[{"name":"results","persistentVolumeClaim":{"claimName":"benchmark-results"}}]}}'
+
+# Get results
+oc exec results-reader -n feast-benchmark -- cat /results/redis/benchmark_results.json
+
+# Cleanup
+oc delete pod results-reader -n feast-benchmark
+```
+
+### Generate Charts
+
+```bash
+./.venv/bin/python generate_charts.py \
+    --dirs results/sqlite results/redis results/postgres results/dynamodb \
+    --names sqlite redis postgres dynamodb \
+    --output results/charts
+```
+
+## Troubleshooting
+
+### Job Failed
+
+```bash
+# Check pod logs
+oc logs -n feast-benchmark -l store=redis
+
+# Check job status
+oc describe job feast-benchmark-redis -n feast-benchmark
+```
+
+### AWS Credentials Missing
+
+```bash
+# Verify secret exists
+oc get secret aws-credentials -n feast-benchmark
+```
+
+### Results Not Found
+
+```bash
+# Check PVC
+oc get pvc benchmark-results -n feast-benchmark
+
+# List available results
+oc exec results-reader -n feast-benchmark -- ls -la /results/
 ```

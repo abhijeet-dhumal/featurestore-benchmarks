@@ -2,6 +2,14 @@
 """
 Unified Feast Benchmark - Comprehensive testing across ALL dimensions.
 
+OPTIMIZATIONS APPLIED:
+- Registry cache_ttl_seconds: 0 (infinite cache during benchmark)
+- entity_key_serialization_version: 3 (latest, most efficient)
+- DynamoDB: batch_size=100, max_pool_connections=200, adaptive retry
+- Registry pre-cached before measurements (fs.refresh_registry())
+- 100 iterations (default) for statistical significance
+- 10 warmup iterations (default) for steady-state measurement
+
 Tracks and evaluates:
 - Features: 10, 50, 100, 200
 - Feature Views: 1, 10, 50, 100+
@@ -16,11 +24,14 @@ Usage:
     # Quick test
     python unified_benchmark.py --preset quick --store sqlite
 
-    # Full matrix
+    # Full matrix (optimized)
     python unified_benchmark.py --preset full --store redis --output results_redis
     
-    # Production config
+    # Production config (optimized)
     python unified_benchmark.py --preset production --store dynamodb --output results_prod
+    
+    # State Farm SLA validation (fully optimized)
+    python unified_benchmark.py --preset statefarm --store redis --output results_statefarm
     
     # Custom dimensions
     python unified_benchmark.py --features 50 200 --entities 1 100 --fv-counts 1 10
@@ -152,39 +163,79 @@ class UnifiedBenchmark:
         return repo_path
     
     def _create_config(self, repo_path: str) -> None:
-        """Create feature_store.yaml."""
+        """Create optimized feature_store.yaml with all performance settings."""
         configs = {
             "sqlite": f"""
 project: feast_benchmark
 provider: local
-registry: {repo_path}/registry.db
+
+# OPTIMIZATION: Infinite registry cache during benchmark
+registry:
+  path: {repo_path}/registry.db
+  cache_ttl_seconds: 0
+
 online_store:
   type: sqlite
   path: {repo_path}/online_store.db
+
+# OPTIMIZATION: Latest serialization format
 entity_key_serialization_version: 3
 """,
             "redis": f"""
 project: feast_benchmark
 provider: local
-registry: {repo_path}/registry.db
+
+# OPTIMIZATION: Infinite registry cache during benchmark
+registry:
+  path: {repo_path}/registry.db
+  cache_ttl_seconds: 0
+
 online_store:
   type: redis
   connection_string: {self.store_config.get('connection_string', 'localhost:6379')}
+
+# OPTIMIZATION: Latest serialization format
 entity_key_serialization_version: 3
 """,
             "dynamodb": f"""
 project: feast_benchmark
 provider: aws
-registry: {repo_path}/registry.db
+
+# OPTIMIZATION: Infinite registry cache during benchmark
+registry:
+  path: {repo_path}/registry.db
+  cache_ttl_seconds: 0
+
 online_store:
   type: dynamodb
   region: {self.store_config.get('region', 'us-east-1')}
+  # OPTIMIZATION: Max batch size for BatchGetItem
+  batch_size: 100
+  # OPTIMIZATION: Eventual consistency (faster)
+  consistent_reads: false
+  # OPTIMIZATION: Increased connection pool
+  max_pool_connections: 200
+  # OPTIMIZATION: Keep connections alive
+  keepalive_timeout: 60.0
+  # OPTIMIZATION: Faster failure detection
+  connect_timeout: 2
+  read_timeout: 5
+  # OPTIMIZATION: Intelligent retry
+  retry_mode: adaptive
+  total_max_retry_attempts: 3
+
+# OPTIMIZATION: Latest serialization format
 entity_key_serialization_version: 3
 """,
             "postgres": f"""
 project: feast_benchmark
 provider: local
-registry: {repo_path}/registry.db
+
+# OPTIMIZATION: Infinite registry cache during benchmark
+registry:
+  path: {repo_path}/registry.db
+  cache_ttl_seconds: 0
+
 online_store:
   type: postgres
   host: {self.store_config.get('host', 'localhost')}
@@ -192,6 +243,8 @@ online_store:
   database: {self.store_config.get('database', 'feast')}
   user: {self.store_config.get('user', 'feast')}
   password: {self.store_config.get('password', 'feast')}
+
+# OPTIMIZATION: Latest serialization format
 entity_key_serialization_version: 3
 """,
         }
@@ -290,8 +343,8 @@ entity_key_serialization_version: 3
         self,
         feature_counts: List[int] = [50, 200],
         entity_counts: List[int] = [1, 10, 50, 100, 500],
-        iterations: int = 20,
-        warmup: int = 3
+        iterations: int = 100,
+        warmup: int = 10
     ) -> List[TestResult]:
         """Run latency tests across features × entities matrix."""
         
@@ -312,6 +365,9 @@ entity_key_serialization_version: 3
         fs = FeatureStore(repo_path=repo_path)
         fs.apply([user] + fvs)
         fs.materialize(start_date=datetime.now() - timedelta(days=1), end_date=datetime.now())
+        
+        # OPTIMIZATION: Pre-populate registry cache
+        fs.refresh_registry()
         
         total = len(feature_counts) * len(entity_counts)
         current = 0
@@ -401,6 +457,9 @@ entity_key_serialization_version: 3
             fs.apply([user] + fvs)
             fs.materialize(start_date=datetime.now() - timedelta(days=1), end_date=datetime.now())
             
+            # OPTIMIZATION: Pre-populate registry cache
+            fs.refresh_registry()
+            
             # All features from all FVs
             all_features = []
             for fv_idx in range(num_fvs):
@@ -477,6 +536,9 @@ entity_key_serialization_version: 3
         fs = FeatureStore(repo_path=repo_path)
         fs.apply([user] + fvs)
         fs.materialize(start_date=datetime.now() - timedelta(days=1), end_date=datetime.now())
+        
+        # OPTIMIZATION: Pre-populate registry cache
+        fs.refresh_registry()
         
         features = [f"fv_0:fv0_f{i}" for i in range(num_features)]
         
@@ -562,6 +624,9 @@ entity_key_serialization_version: 3
         fs = FeatureStore(repo_path=repo_path)
         fs.apply([user] + fvs)
         fs.materialize(start_date=datetime.now() - timedelta(days=1), end_date=datetime.now())
+        
+        # OPTIMIZATION: Pre-populate registry cache
+        fs.refresh_registry()
         
         features = [f"fv_0:fv0_f{i}" for i in range(num_features)]
         entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
@@ -943,10 +1008,10 @@ Environment Variables (alternative to CLI args):
     # Test Control
     # =========================================================================
     control_group = parser.add_argument_group('Test Control')
-    control_group.add_argument("--iterations", type=int, default=20,
-                              help="Iterations per test configuration (default: 20)")
-    control_group.add_argument("--warmup", type=int, default=3,
-                              help="Warmup iterations before measurement (default: 3)")
+    control_group.add_argument("--iterations", type=int, default=100,
+                              help="Iterations per test configuration (default: 100 - optimized)")
+    control_group.add_argument("--warmup", type=int, default=10,
+                              help="Warmup iterations before measurement (default: 10 - optimized)")
     control_group.add_argument("--throughput-duration", type=int, default=10,
                               help="Throughput test duration in seconds (default: 10)")
     control_group.add_argument("--throughput-workers", nargs='+', type=int, default=[1, 5, 10],
@@ -1016,36 +1081,40 @@ Environment Variables (alternative to CLI args):
         args.throughput_workers = [1, 5]
         args.skip_transformations = True
     elif args.preset == "full":
-        # All dimensions from TRACKER.md
+        # All dimensions from TRACKER.md - OPTIMIZED
         args.features = [10, 50, 100, 200]
         args.entities = [1, 10, 50, 100, 200, 500]
         args.fv_counts = [1, 10, 50, 100]
         args.feature_services = [1, 5, 10]
         args.transformations = ["none", "python", "pandas"]
         args.compression = "none"
-        args.iterations = 20
+        args.iterations = 50  # OPTIMIZATION: More iterations
+        args.warmup = 10  # OPTIMIZATION: Extended warmup
         args.throughput_duration = 30
         args.throughput_workers = [1, 5, 10, 20]
     elif args.preset == "production":
+        # Production preset - OPTIMIZED
         args.features = [200]
         args.entities = [1, 10, 50, 100, 200, 500]  # Includes State Farm 50, 200
         args.fv_counts = [1, 10, 50, 100]
         args.feature_services = [1, 5, 10]
         args.transformations = ["none", "python", "pandas"]
         args.compression = "none"
-        args.iterations = 30
+        args.iterations = 100  # OPTIMIZATION: More iterations for statistical significance
+        args.warmup = 10  # OPTIMIZATION: Extended warmup
         args.throughput_duration = 60
         args.throughput_workers = [1, 5, 10, 20, 50]
     elif args.preset == "statefarm":
         # State Farm exact SLA requirements: 60ms p99, 3M/hour
+        # OPTIMIZED: All performance tuning applied
         args.features = [200]
-        args.entities = [50, 200]  # State Farm entity counts
+        args.entities = [1, 10, 50, 100, 200, 500]  # Extended entity range for comprehensive testing
         args.fv_counts = [1]
         args.feature_services = [1]
         args.transformations = ["none"]
         args.compression = "none"
-        args.iterations = 50
-        args.warmup = 10
+        args.iterations = 100  # OPTIMIZATION: More iterations for statistical significance
+        args.warmup = 10  # OPTIMIZATION: Extended warmup for steady-state
         args.throughput_duration = 60
         args.throughput_workers = [10, 20, 50]
         args.sla_p99_ms = 60.0
@@ -1181,7 +1250,8 @@ Environment Variables (alternative to CLI args):
         benchmark.run_latency_matrix(
             feature_counts=args.features,
             entity_counts=args.entities,
-            iterations=args.iterations
+            iterations=args.iterations,
+            warmup=args.warmup
         )
     
     if not args.skip_fv_scaling:

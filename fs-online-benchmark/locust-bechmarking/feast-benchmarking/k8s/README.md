@@ -1,180 +1,117 @@
-# Kubernetes Manifests for Feast Benchmarking
+# Kubernetes Deployment
 
-Kustomize-based Kubernetes manifests for running Feast benchmarks in a cluster.
+Kustomize-based deployment for Feast benchmark infrastructure.
 
 ## Structure
 
 ```
 k8s/
-├── base/                    # Base resources (namespace, configmap, PVC)
-├── stores/                  # Store deployments (Redis, Postgres)
-├── jobs/                    # Benchmark jobs (per store)
-├── overlays/
-│   ├── quick/              # Quick smoke test
-│   ├── full/               # Full matrix test
-│   ├── production/         # Production-like config
-│   └── statefarm/          # State Farm SLA requirements
-└── legacy/                  # Old standalone files
+├── base/                     # Base resources
+│   ├── namespace.yaml        # feast-benchmark namespace
+│   ├── configmap.yaml        # Benchmark configuration
+│   ├── results-pvc.yaml      # Persistent volume for results
+│   └── kustomization.yaml
+├── jobs/                     # Benchmark job definitions
+│   ├── sqlite-job.yaml
+│   ├── redis-job.yaml
+│   ├── postgres-job.yaml
+│   ├── dynamodb-job.yaml
+│   ├── profile-job.yaml      # Deep profiling job
+│   └── kustomization.yaml
+├── stores/                   # Online store deployments
+│   ├── redis.yaml
+│   ├── postgres.yaml
+│   └── kustomization.yaml
+└── overlays/                 # Environment-specific configs
+    ├── quick/                # Fast testing (fewer iterations)
+    ├── statefarm/            # State Farm SLA validation
+    ├── production/           # Production-like settings
+    └── full/                 # Full test matrix
 ```
-
-## Overlay Configurations
-
-| Overlay | Entities | Features | Iterations | Use Case |
-|---------|----------|----------|------------|----------|
-| `quick` | 1,10,100 | 50 | 10 | Fast validation |
-| `full` | 1,10,50,100,200,500 | 10,50,100,200 | 20 | Complete matrix |
-| `production` | 1,10,50,100,200,500 | 200 | 30 | Production-like |
-| `statefarm` | **50,200** | **200** | **50** | State Farm SLA (60ms) |
 
 ## Quick Start
 
-### 1. Deploy Infrastructure (State Farm config)
-
 ```bash
-# Apply State Farm overlay (namespace, configmap, stores)
-kubectl apply -k k8s/overlays/statefarm
+# Deploy infrastructure
+oc apply -k base
+oc apply -k stores
 
-# Wait for stores to be ready
-kubectl wait --for=condition=available deployment/redis -n feast-benchmark --timeout=120s
-kubectl wait --for=condition=available deployment/postgres -n feast-benchmark --timeout=120s
+# Wait for pods
+oc wait --for=condition=ready pod -l app=redis -n feast-benchmark --timeout=120s
+oc wait --for=condition=ready pod -l app=postgres -n feast-benchmark --timeout=120s
+
+# Run benchmark (use parent script instead)
+cd .. && ./run_full_benchmark.sh
 ```
 
-### 2. Run Benchmarks
+## Manual Job Execution
 
 ```bash
-# Redis benchmark
-kubectl apply -f k8s/jobs/redis-job.yaml
-kubectl logs -f job/feast-benchmark-redis -n feast-benchmark
-
-# PostgreSQL benchmark
-kubectl apply -f k8s/jobs/postgres-job.yaml
-kubectl logs -f job/feast-benchmark-postgres -n feast-benchmark
-
-# DynamoDB (requires AWS credentials)
-kubectl create secret generic aws-credentials -n feast-benchmark \
-  --from-literal=AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
-  --from-literal=AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  --from-literal=AWS_DEFAULT_REGION=eu-west-1
-kubectl apply -f k8s/jobs/dynamodb-job.yaml
-kubectl logs -f job/feast-benchmark-dynamodb -n feast-benchmark
-```
-
-### 3. Collect Results
-
-```bash
-# Apply results collector job
-kubectl apply -f k8s/jobs/collect-results.yaml
-
-# Or manually copy results
-kubectl cp feast-benchmark/$(kubectl get pods -n feast-benchmark -l app=feast-benchmark -o jsonpath='{.items[0].metadata.name}'):/results ./results
-```
-
-### 4. Cleanup
-
-```bash
-# Delete all jobs
-kubectl delete jobs --all -n feast-benchmark
-
-# Delete everything
-kubectl delete -k k8s/overlays/statefarm
-```
-
-## Automation Script
-
-```bash
-#!/bin/bash
-# run_statefarm_benchmark.sh - Run State Farm SLA validation
-
-set -e
-NAMESPACE="feast-benchmark"
-
-echo "============================================"
-echo "State Farm SLA Benchmark"
-echo "Entities: 50, 200 | Features: 200 | SLA: 60ms"
-echo "============================================"
-
-# Deploy
-echo "Deploying infrastructure..."
-kubectl apply -k k8s/overlays/statefarm
-kubectl wait --for=condition=available deployment/redis -n $NAMESPACE --timeout=120s
-kubectl wait --for=condition=available deployment/postgres -n $NAMESPACE --timeout=120s
-
-# Run benchmarks in parallel
-echo "Starting benchmarks..."
-kubectl apply -f k8s/jobs/redis-job.yaml
-kubectl apply -f k8s/jobs/postgres-job.yaml
+# Run individual store benchmark
+oc create -f jobs/redis-job.yaml -n feast-benchmark
 
 # Wait for completion
-echo "Waiting for completion..."
-kubectl wait --for=condition=complete job/feast-benchmark-redis -n $NAMESPACE --timeout=600s
-kubectl wait --for=condition=complete job/feast-benchmark-postgres -n $NAMESPACE --timeout=600s
+oc wait --for=condition=complete job/feast-benchmark-redis -n feast-benchmark --timeout=900s
 
-# Collect results
-echo "Collecting results..."
-kubectl apply -f k8s/jobs/collect-results.yaml
-kubectl wait --for=condition=complete job/feast-benchmark-collect -n $NAMESPACE --timeout=120s
-
-# Copy results locally
-mkdir -p results/statefarm
-kubectl cp $NAMESPACE/$(kubectl get pods -n $NAMESPACE -l job-name=feast-benchmark-collect -o jsonpath='{.items[0].metadata.name}'):/results ./results/statefarm/
-
-echo "============================================"
-echo "Results saved to ./results/statefarm/"
-echo "============================================"
-ls -la results/statefarm/
+# Check logs
+oc logs -n feast-benchmark -l store=redis --tail=100
 ```
 
-## Testing Manifests (Dry Run)
+## Configuration
+
+### Base ConfigMap (k8s/base/configmap.yaml)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| FEATURES | 200 | Number of features |
+| ENTITIES | 1,10,50,100,200,500 | Entity counts |
+| ITERATIONS | 100 | Test iterations |
+| WARMUP | 10 | Warmup iterations |
+| SLA_MS | 60 | SLA target (ms) |
+
+### Overlays
+
+| Overlay | Use Case | Entities | Iterations |
+|---------|----------|----------|------------|
+| quick | Fast testing | 1,10,100 | 20 |
+| statefarm | SLA validation | 1,10,50,100,200,500 | 100 |
+| production | Production test | 1,10,50,100,200,500 | 100 |
+| full | Complete matrix | 1,10,50,100,200,500,1000 | 100 |
 
 ```bash
-# Validate all overlays
-for overlay in base overlays/quick overlays/full overlays/production overlays/statefarm; do
-  echo "Testing $overlay..."
-  kubectl apply -k k8s/$overlay --dry-run=client
-done
-
-# Validate jobs
-kubectl apply -f k8s/jobs/redis-job.yaml --dry-run=client
-kubectl apply -f k8s/jobs/postgres-job.yaml --dry-run=client
-kubectl apply -f k8s/jobs/dynamodb-job.yaml --dry-run=client
+# Use overlay
+oc apply -k overlays/statefarm
 ```
 
-## OpenShift Notes
+## AWS Credentials (DynamoDB)
 
 ```bash
-# Use oc instead of kubectl
-oc apply -k k8s/overlays/statefarm
-
-# Grant permissions if needed
-oc adm policy add-scc-to-user anyuid -z default -n feast-benchmark
+oc create secret generic aws-credentials \
+    -n feast-benchmark \
+    --from-literal=AWS_ACCESS_KEY_ID=<key> \
+    --from-literal=AWS_SECRET_ACCESS_KEY=<secret> \
+    --from-literal=AWS_DEFAULT_REGION=eu-west-1
 ```
 
-## ConfigMap Parameters
+## Results
 
-The benchmark behavior is controlled by the ConfigMap:
+Results are stored in the `benchmark-results` PVC at `/results/<store>/benchmark_results.json`.
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `FEATURES` | Feature counts to test | `10,50,100,200` |
-| `ENTITIES` | Entity counts to test | `1,10,50,100,200,500` |
-| `FV_COUNTS` | Feature View counts | `1,10,50,100` |
-| `FEATURE_SERVICES` | Feature Service counts | `1,5,10` |
-| `TRANSFORMATIONS` | Transformation modes | `none,python,pandas` |
-| `COMPRESSION` | HTTP compression | `none` |
-| `ITERATIONS` | Test iterations | `20` |
-| `WARMUP` | Warmup iterations | `5` |
-| `SLA_P99_MS` | p99 latency target | `60` |
-| `SLA_THROUGHPUT_RPH` | Throughput target | `3000000` |
+```bash
+# Access results
+oc run results-reader -n feast-benchmark --image=busybox --restart=Never \
+    --overrides='{"spec":{"containers":[{"name":"results-reader","image":"busybox","command":["sleep","300"],"volumeMounts":[{"name":"results","mountPath":"/results"}]}],"volumes":[{"name":"results","persistentVolumeClaim":{"claimName":"benchmark-results"}}]}}'
 
-Override via overlay or patch:
+oc exec results-reader -n feast-benchmark -- cat /results/redis/benchmark_results.json
+oc delete pod results-reader -n feast-benchmark
+```
 
-```yaml
-# kustomization.yaml
-configMapGenerator:
-  - name: benchmark-config
-    behavior: merge
-    literals:
-      - ENTITIES=50,200
-      - FEATURES=200
-      - ITERATIONS=50
+## Cleanup
+
+```bash
+# Delete jobs
+oc delete jobs -n feast-benchmark -l app=feast-benchmark
+
+# Delete everything
+oc delete namespace feast-benchmark
 ```

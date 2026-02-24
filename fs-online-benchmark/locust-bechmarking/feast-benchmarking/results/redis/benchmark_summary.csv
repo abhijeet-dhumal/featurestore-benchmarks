@@ -1,5 +1,0 @@
-test_type,features,entities,fvs,store,transform,p50_ms,p95_ms,p99_ms,sla_pass,online_read_pct,protobuf_pct
-latency,50,1,1,redis,none,164.15,185.4,185.4,False,93.0,0.5
-latency,50,10,1,redis,none,172.91,179.08,179.08,False,92.8,1.6
-latency,50,100,1,redis,none,212.48,422.79,422.79,False,89.5,5.8
-fv_scaling,10,100,1,redis,none,173.08,192.78,192.78,False,0.0,0.0

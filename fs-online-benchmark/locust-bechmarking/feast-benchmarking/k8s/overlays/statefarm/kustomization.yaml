@@ -7,22 +7,31 @@ resources:
   - ../../base
   - ../../stores
 
-# State Farm exact SLA requirements:
+# State Farm SLA requirements:
 # - 60ms p99 latency
 # - 3M transactions/hour
-# - 50 and 200 entities
+# - 50 and 200 entities (extended to 500 for upper bound testing)
 # - 200 features
+#
+# OPTIMIZATIONS APPLIED:
+# - registry_cache_ttl=0 (infinite cache)
+# - entity_key_serialization_version=3 (latest format)
+# - DynamoDB: batch_size=100, max_pool_connections=200, adaptive retry
+# - Higher iterations (100) for statistical significance
+# - More warmup (10) for steady-state measurement
 configMapGenerator:
   - name: benchmark-config
     behavior: merge
     literals:
       - FEATURES=200
-      - ENTITIES=50,200
+      - ENTITIES=1,10,50,100,200,500
       - FV_COUNTS=1
       - FEATURE_SERVICES=1
       - TRANSFORMATIONS=none
       - COMPRESSION=none
-      - ITERATIONS=50
+      # OPTIMIZATION: More iterations for statistical significance
+      - ITERATIONS=100
+      # OPTIMIZATION: Extended warmup for steady-state
       - WARMUP=10
       - SLA_P99_MS=60
       - SLA_THROUGHPUT_RPH=3000000

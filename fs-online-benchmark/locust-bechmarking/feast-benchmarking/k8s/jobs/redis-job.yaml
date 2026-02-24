@@ -40,10 +40,14 @@ spec:
               export PATH=$HOME/.local/bin:$PATH
               pip install --user -q feast 'redis>=4.0.0' pandas numpy
               
-              cat > /tmp/benchmark.py << 'EOF'
+              python3 << 'PYTHON_EOF'
+              """
+              Optimized Redis Benchmark with all performance tuning applied.
+              """
               import json, os, statistics, time
               from datetime import datetime, timedelta
-              from dataclasses import dataclass, asdict
+              from dataclasses import dataclass, asdict, field
+              from typing import List
               import pandas as pd
               from feast import Entity, FeatureStore, FeatureView, Field, FileSource
               from feast.types import Float64
@@ -57,7 +61,11 @@ spec:
                   p95: float
                   p99: float
                   mean: float
+                  min_val: float
+                  max_val: float
+                  std_dev: float
                   sla_pass: bool
+                  optimizations: List[str] = field(default_factory=list)
               
               def run():
                   import shutil
@@ -68,17 +76,30 @@ spec:
                   redis_host = os.environ.get("REDIS_HOST", "redis")
                   redis_port = os.environ.get("REDIS_PORT", "6379")
                   
+                  # OPTIMIZED config with cache_ttl=0 and entity_key_serialization_version=3
+                  config = f"""project: benchmark
+              provider: local
+              registry:
+                path: {repo}/registry.db
+                cache_ttl_seconds: 0
+              online_store:
+                type: redis
+                connection_string: {redis_host}:{redis_port}
+              entity_key_serialization_version: 3
+              """
                   with open(f"{repo}/feature_store.yaml", "w") as f:
-                      f.write(f"project: benchmark\nregistry: {repo}/registry.db\nprovider: local\nonline_store:\n  type: redis\n  connection_string: {redis_host}:{redis_port}\n")
+                      f.write(config)
                   
-                  NUM_FEATURES = int(os.environ.get("FEATURES", "50"))
-                  ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,100").split(",")]
-                  ITERATIONS = int(os.environ.get("ITERATIONS", "20"))
+                  NUM_FEATURES = int(os.environ.get("FEATURES", "200"))
+                  ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,50,100,500").split(",")]
+                  ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
+                  WARMUP = int(os.environ.get("WARMUP", "10"))
                   SLA = float(os.environ.get("SLA_P99_MS", "60"))
                   
-                  data = {"user_id": [f"user_{i}" for i in range(1000)]}
+                  max_entities = max(ENTITIES) + 100
+                  data = {"user_id": [f"user_{i}" for i in range(max_entities)]}
                   for i in range(NUM_FEATURES):
-                      data[f"f{i}"] = [float(i*j) for j in range(1000)]
+                      data[f"f{i}"] = [float(i*j) for j in range(max_entities)]
                   df = pd.DataFrame(data)
                   df["event_timestamp"] = pd.Timestamp.now()
                   df.to_parquet(f"{repo}/data.parquet")
@@ -91,17 +112,21 @@ spec:
                   fs = FeatureStore(repo_path=repo)
                   fs.apply([entity, fv])
                   fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
+                  fs.refresh_registry()
                   
                   features = [f"fv:f{i}" for i in range(NUM_FEATURES)]
                   results = []
+                  optimizations = ["cache_ttl=0", "entity_key_v3", f"iter={ITERATIONS}", f"warmup={WARMUP}"]
                   
                   print("="*70)
-                  print(f"REDIS BENCHMARK ({redis_host}:{redis_port})")
+                  print(f"REDIS BENCHMARK (OPTIMIZED) - {redis_host}:{redis_port}")
+                  print(f"Features: {NUM_FEATURES} | Iterations: {ITERATIONS} | Warmup: {WARMUP}")
                   print("="*70)
                   
                   for n in ENTITIES:
                       rows = [{"user_id": f"user_{i}"} for i in range(n)]
-                      for _ in range(3): fs.get_online_features(features=features, entity_rows=rows)
+                      for _ in range(WARMUP):
+                          fs.get_online_features(features=features, entity_rows=rows)
                       
                       times = []
                       for _ in range(ITERATIONS):
@@ -110,20 +135,29 @@ spec:
                           times.append((time.perf_counter()-start)*1000)
                       times.sort()
                       
-                      r = Result("redis", NUM_FEATURES, n, times[len(times)//2], times[int(len(times)*0.95)], times[-1], statistics.mean(times), times[-1]<SLA)
+                      p99_idx = int(len(times)*0.99)
+                      r = Result("redis", NUM_FEATURES, n, times[len(times)//2], times[int(len(times)*0.95)],
+                                 times[p99_idx], statistics.mean(times), min(times), max(times),
+                                 statistics.stdev(times) if len(times) > 1 else 0, times[p99_idx] < SLA, optimizations)
                       results.append(r)
                       status = "PASS" if r.sla_pass else "FAIL"
-                      print(f"{n}e: p50={r.p50:.1f}ms p99={r.p99:.1f}ms [{status}]")
+                      print(f"{n:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms | std={r.std_dev:5.1f}ms [{status}]")
                   
                   os.makedirs("/results/redis", exist_ok=True)
+                  output = {"store": "redis", "timestamp": datetime.now().isoformat(),
+                            "config": {"features": NUM_FEATURES, "iterations": ITERATIONS, "warmup": WARMUP,
+                                       "sla_ms": SLA, "optimizations": optimizations},
+                            "latency": [asdict(r) for r in results]}
                   with open("/results/redis/benchmark_results.json", "w") as f:
-                      json.dump({"store":"redis","timestamp":datetime.now().isoformat(),"latency":[asdict(r) for r in results]}, f, indent=2)
+                      json.dump(output, f, indent=2)
+                  
                   print(f"\nSaved: /results/redis/benchmark_results.json")
+                  passed = sum(1 for r in results if r.sla_pass)
+                  print(f"SLA Pass Rate: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
               
-              if __name__ == "__main__": run()
-              EOF
-              
-              python /tmp/benchmark.py
+              if __name__ == "__main__":
+                  run()
+              PYTHON_EOF
       volumes:
         - name: results
           persistentVolumeClaim:

@@ -1,5 +1,0 @@
-test_type,features,entities,fvs,store,transform,p50_ms,p95_ms,p99_ms,sla_pass,online_read_pct,protobuf_pct
-latency,50,1,1,sqlite,none,3.93,4.1,4.1,True,2.9,2.9
-latency,50,10,1,sqlite,none,5.71,5.84,5.84,True,15.1,14.0
-latency,50,100,1,sqlite,none,23.27,26.62,26.62,True,35.7,33.1
-fv_scaling,10,100,1,sqlite,none,3.33,3.45,3.45,True,0.0,0.0

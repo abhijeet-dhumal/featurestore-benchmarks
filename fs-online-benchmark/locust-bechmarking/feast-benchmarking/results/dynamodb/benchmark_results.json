@@ -1,46 +1,140 @@
 {
   "store": "dynamodb",
-  "timestamp": "2026-02-23T16:31:45.511893",
+  "region": "eu-west-1",
+  "timestamp": "2026-02-24T10:44:44.507470",
   "config": {
-    "features": [
-      50
-    ],
-    "entities": [
-      1,
-      10,
-      100
+    "features": 200,
+    "iterations": 100,
+    "warmup": 10,
+    "sla_ms": 60.0,
+    "optimizations": [
+      "cache_ttl=0",
+      "entity_key_v3",
+      "batch=100",
+      "pool=200",
+      "adaptive_retry"
     ]
   },
   "latency": [
     {
       "store": "dynamodb",
-      "num_features": 50,
+      "num_features": 200,
       "num_entities": 1,
-      "p50": 7.2600540006533265,
-      "p95": 7.954381006129552,
-      "p99": 7.954381006129552,
-      "mean": 7.231649901586934,
-      "sla_pass": true
+      "p50": 19.043592998059466,
+      "p95": 21.345331988413818,
+      "p99": 29.744408006081358,
+      "mean": 19.327961430099094,
+      "min_val": 18.007302001933567,
+      "max_val": 29.744408006081358,
+      "std_dev": 1.33943760113526,
+      "sla_pass": true,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
     },
     {
       "store": "dynamodb",
-      "num_features": 50,
+      "num_features": 200,
       "num_entities": 10,
-      "p50": 11.830212999484502,
-      "p95": 13.275783996505197,
-      "p99": 13.275783996505197,
-      "mean": 11.99031405049027,
-      "sla_pass": true
+      "p50": 36.36138000001665,
+      "p95": 39.09526900679339,
+      "p99": 120.25533000996802,
+      "mean": 38.99054039036855,
+      "min_val": 34.8801760119386,
+      "max_val": 120.25533000996802,
+      "std_dev": 14.33855741497314,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
     },
     {
       "store": "dynamodb",
-      "num_features": 50,
+      "num_features": 200,
+      "num_entities": 50,
+      "p50": 125.33969001378864,
+      "p95": 206.75803000631277,
+      "p99": 208.33132899133489,
+      "mean": 156.56238767085597,
+      "min_val": 116.23345100088045,
+      "max_val": 208.33132899133489,
+      "std_dev": 40.90717053400258,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 200,
       "num_entities": 100,
-      "p50": 67.24094100354705,
-      "p95": 139.3800059959176,
-      "p99": 139.3800059959176,
-      "mean": 77.79490624998289,
-      "sla_pass": false
+      "p50": 314.0329910092987,
+      "p95": 323.44100599584635,
+      "p99": 336.3882889971137,
+      "mean": 300.3367852103838,
+      "min_val": 222.5570250011515,
+      "max_val": 336.3882889971137,
+      "std_dev": 33.06426730187941,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 606.9951210083673,
+      "p95": 641.4323380013229,
+      "p99": 659.5778909977525,
+      "mean": 581.7657423990022,
+      "min_val": 518.1743019929854,
+      "max_val": 659.5778909977525,
+      "std_dev": 45.47745127506339,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
+    },
+    {
+      "store": "dynamodb",
+      "num_features": 200,
+      "num_entities": 500,
+      "p50": 1451.7991920001805,
+      "p95": 1500.8596959960414,
+      "p99": 1523.9947960071731,
+      "mean": 1430.061335079954,
+      "min_val": 1353.2545799971558,
+      "max_val": 1523.9947960071731,
+      "std_dev": 51.21481476558114,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "batch=100",
+        "pool=200",
+        "adaptive_retry"
+      ]
     }
   ]
 }
