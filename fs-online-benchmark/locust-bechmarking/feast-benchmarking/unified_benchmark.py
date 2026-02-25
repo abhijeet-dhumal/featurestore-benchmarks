@@ -81,6 +81,7 @@ class TestResult:
     mean: float
     min_val: float
     max_val: float
+    std_dev: float = 0.0
     
     # Throughput
     rps: float = 0.0
@@ -297,6 +298,17 @@ entity_key_serialization_version: 3
         
         return user, feature_views
     
+    def _simple_request(
+        self,
+        fs: FeatureStore,
+        features: List[str],
+        entity_rows: List[Dict]
+    ) -> float:
+        """Measure a single request latency without profiling overhead."""
+        start = time.perf_counter()
+        fs.get_online_features(features=features, entity_rows=entity_rows)
+        return (time.perf_counter() - start) * 1000
+    
     def _profile_request(
         self,
         fs: FeatureStore,
@@ -313,27 +325,55 @@ entity_key_serialization_version: 3
         profiler.disable()
         total_ms = (time.perf_counter() - start) * 1000
         
-        # Parse stats
+        # Parse stats - use total time (tt) not cumulative (ct) for accurate breakdown
         stream = io.StringIO()
         stats = pstats.Stats(profiler, stream=stream)
         
         function_times = {}
         for func, (cc, nc, tt, ct, callers) in stats.stats.items():
-            _, _, funcname = func
-            function_times[funcname] = ct * 1000
+            filename, lineno, funcname = func
+            # Use tt (total time in this function) for breakdown
+            time_ms = tt * 1000
+            if time_ms > 0.01:  # Only track functions > 0.01ms
+                function_times[funcname] = function_times.get(funcname, 0) + time_ms
         
-        online_read = function_times.get('online_read', 0) or function_times.get('_get_online_features', 0)
-        protobuf = function_times.get('_convert_rows_to_protobuf', 0)
+        # Calculate breakdown percentages
+        online_read = function_times.get('online_read', 0)
+        protobuf = function_times.get('_convert_rows_to_protobuf', 0) + function_times.get('construct_response_feature_vector', 0)
         entity_serial = function_times.get('serialize_entity_key', 0)
+        timestamp = function_times.get('FromDatetime', 0) + function_times.get('convert_timestamp', 0)
         
         breakdown = {
             'online_read_pct': (online_read / total_ms * 100) if total_ms > 0 else 0,
             'protobuf_convert_pct': (protobuf / total_ms * 100) if total_ms > 0 else 0,
             'entity_serial_pct': (entity_serial / total_ms * 100) if total_ms > 0 else 0,
+            'timestamp_pct': (timestamp / total_ms * 100) if total_ms > 0 else 0,
         }
         breakdown['other_pct'] = max(0, 100 - sum(breakdown.values()))
         
         return total_ms, breakdown
+    
+    def _get_breakdown_for_config(
+        self,
+        fs: FeatureStore,
+        features: List[str],
+        entity_rows: List[Dict],
+        profile_iterations: int = 5
+    ) -> Dict[str, float]:
+        """Run profiling pass to get breakdown data (separate from main benchmark)."""
+        breakdowns = []
+        for _ in range(profile_iterations):
+            _, breakdown = self._profile_request(fs, features, entity_rows)
+            breakdowns.append(breakdown)
+        
+        # Average the breakdowns
+        return {
+            'online_read_pct': statistics.mean([b['online_read_pct'] for b in breakdowns]),
+            'protobuf_convert_pct': statistics.mean([b['protobuf_convert_pct'] for b in breakdowns]),
+            'entity_serial_pct': statistics.mean([b['entity_serial_pct'] for b in breakdowns]),
+            'timestamp_pct': statistics.mean([b.get('timestamp_pct', 0) for b in breakdowns]),
+            'other_pct': statistics.mean([b['other_pct'] for b in breakdowns]),
+        }
     
     # -------------------------------------------------------------------------
     # Test: Latency Matrix (Features × Entities)
@@ -344,13 +384,25 @@ entity_key_serialization_version: 3
         feature_counts: List[int] = [50, 200],
         entity_counts: List[int] = [1, 10, 50, 100, 500],
         iterations: int = 100,
-        warmup: int = 10
+        warmup: int = 10,
+        profile: bool = True,
+        profile_iterations: int = 5
     ) -> List[TestResult]:
-        """Run latency tests across features × entities matrix."""
+        """Run latency tests across features × entities matrix.
+        
+        Args:
+            feature_counts: List of feature counts to test
+            entity_counts: List of entity counts to test
+            iterations: Number of iterations for latency measurement
+            warmup: Number of warmup iterations
+            profile: Whether to capture profiling breakdown (adds overhead)
+            profile_iterations: Number of iterations for profiling pass (if profile=True)
+        """
         
         print("\n" + "=" * 70)
         print("LATENCY MATRIX TEST")
         print(f"Features: {feature_counts} | Entities: {entity_counts}")
+        print(f"Iterations: {iterations} | Warmup: {warmup} | Profile: {profile}")
         print("=" * 70)
         
         results = []
@@ -384,16 +436,19 @@ entity_key_serialization_version: 3
                 for _ in range(warmup):
                     fs.get_online_features(features=features, entity_rows=entity_rows)
                 
-                # Benchmark with profiling
+                # Main benchmark - fast path without profiling overhead
                 latencies = []
-                breakdowns = []
-                
                 for _ in range(iterations):
-                    latency, breakdown = self._profile_request(fs, features, entity_rows)
+                    latency = self._simple_request(fs, features, entity_rows)
                     latencies.append(latency)
-                    breakdowns.append(breakdown)
                 
                 latencies.sort()
+                
+                # Separate profiling pass (if enabled) - fewer iterations
+                breakdown = {'online_read_pct': 0, 'protobuf_convert_pct': 0, 
+                            'entity_serial_pct': 0, 'timestamp_pct': 0, 'other_pct': 100}
+                if profile:
+                    breakdown = self._get_breakdown_for_config(fs, features, entity_rows, profile_iterations)
                 
                 result = TestResult(
                     test_type="latency",
@@ -408,11 +463,12 @@ entity_key_serialization_version: 3
                     mean=statistics.mean(latencies),
                     min_val=min(latencies),
                     max_val=max(latencies),
+                    std_dev=statistics.stdev(latencies) if len(latencies) > 1 else 0,
                     rps=1000/statistics.mean(latencies) if statistics.mean(latencies) > 0 else 0,
-                    online_read_pct=statistics.mean([b['online_read_pct'] for b in breakdowns]),
-                    protobuf_convert_pct=statistics.mean([b['protobuf_convert_pct'] for b in breakdowns]),
-                    entity_serial_pct=statistics.mean([b['entity_serial_pct'] for b in breakdowns]),
-                    other_pct=statistics.mean([b['other_pct'] for b in breakdowns]),
+                    online_read_pct=breakdown['online_read_pct'],
+                    protobuf_convert_pct=breakdown['protobuf_convert_pct'],
+                    entity_serial_pct=breakdown['entity_serial_pct'],
+                    other_pct=breakdown['other_pct'],
                     sla_pass=latencies[-1] < 60,
                     timestamp=datetime.now().isoformat(),
                     feast_version=self.feast_version
@@ -421,7 +477,8 @@ entity_key_serialization_version: 3
                 
                 sla = "✅" if result.sla_pass else "❌"
                 print(f"  p50: {result.p50:.1f}ms | p95: {result.p95:.1f}ms | p99: {result.p99:.1f}ms {sla}")
-                print(f"  Breakdown: read={result.online_read_pct:.0f}% | proto={result.protobuf_convert_pct:.0f}% | serial={result.entity_serial_pct:.0f}%")
+                if profile:
+                    print(f"  Breakdown: read={breakdown['online_read_pct']:.0f}% | proto={breakdown['protobuf_convert_pct']:.0f}% | ts={breakdown.get('timestamp_pct', 0):.0f}% | serial={breakdown['entity_serial_pct']:.0f}%")
         
         self.summary.latency_results.extend(results)
         return results
@@ -1012,6 +1069,10 @@ Environment Variables (alternative to CLI args):
                               help="Iterations per test configuration (default: 100 - optimized)")
     control_group.add_argument("--warmup", type=int, default=10,
                               help="Warmup iterations before measurement (default: 10 - optimized)")
+    control_group.add_argument("--profile", action='store_true', default=False,
+                              help="Enable profiling to capture function breakdown (adds overhead)")
+    control_group.add_argument("--profile-iterations", type=int, default=5,
+                              help="Number of iterations for profiling pass (default: 5)")
     control_group.add_argument("--throughput-duration", type=int, default=10,
                               help="Throughput test duration in seconds (default: 10)")
     control_group.add_argument("--throughput-workers", nargs='+', type=int, default=[1, 5, 10],
@@ -1251,7 +1312,9 @@ Environment Variables (alternative to CLI args):
             feature_counts=args.features,
             entity_counts=args.entities,
             iterations=args.iterations,
-            warmup=args.warmup
+            warmup=args.warmup,
+            profile=args.profile,
+            profile_iterations=args.profile_iterations
         )
     
     if not args.skip_fv_scaling:

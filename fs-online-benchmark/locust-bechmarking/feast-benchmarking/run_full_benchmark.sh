@@ -310,6 +310,7 @@ run_local_benchmark() {
         --entities $entities_arg \
         --iterations $ITERATIONS \
         --warmup $WARMUP \
+        --profile \
         --output $output_path"
 }
 

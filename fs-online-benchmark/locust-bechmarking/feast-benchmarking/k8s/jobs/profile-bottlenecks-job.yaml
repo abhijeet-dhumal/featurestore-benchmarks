@@ -1,0 +1,328 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-profile-bottlenecks
+  labels:
+    app: feast-benchmark
+    component: profiler
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: feast-benchmark
+        component: profiler
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: profiler
+          image: python:3.11-slim
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_DEFAULT_REGION
+                  optional: true
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: results
+              mountPath: /results
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export HOME=/tmp
+              export PATH=$HOME/.local/bin:$PATH
+              export PYTHONUNBUFFERED=1
+              
+              echo "=== Installing dependencies ==="
+              pip install --user -q 'feast[aws,postgres]' 'redis>=4.0.0' 'psycopg[binary,pool]>=3.0.0' aiobotocore pandas numpy
+              echo "✓ Dependencies installed"
+              
+              python3 -u << 'PYTHON_EOF'
+              """
+              Feast Bottleneck Profiler - K8s Job
+              Profiles all available stores and generates detailed function-level breakdown.
+              """
+              import cProfile
+              import json
+              import os
+              import pstats
+              import shutil
+              import statistics
+              import time
+              from collections import defaultdict
+              from datetime import datetime, timedelta
+              from typing import Dict, List
+              
+              import pandas as pd
+              from feast import Entity, FeatureStore, FeatureView, Field, FileSource
+              from feast.types import Float64
+              
+              def log(msg):
+                  print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+              
+              def setup_repo(repo_path: str, store_type: str, config: Dict) -> str:
+                  shutil.rmtree(repo_path, ignore_errors=True)
+                  os.makedirs(repo_path, exist_ok=True)
+                  
+                  store_configs = {
+                      'sqlite': f"type: sqlite\n  path: {repo_path}/online.db",
+                      'redis': f"type: redis\n  connection_string: {config['redis_host']}:{config['redis_port']}",
+                      'postgres': f"""type: postgres
+                host: {config['pg_host']}
+                port: {config['pg_port']}
+                database: {config['pg_db']}
+                user: {config['pg_user']}
+                password: {config['pg_pass']}""",
+                      'dynamodb': f"""type: dynamodb
+                region: {config['region']}
+                batch_size: 100
+                max_pool_connections: 200"""
+                  }
+                  
+                  yaml_content = f"""project: profile_{store_type}
+              provider: local
+              registry:
+                path: {repo_path}/registry.db
+                cache_ttl_seconds: 0
+              online_store:
+                {store_configs[store_type]}
+              entity_key_serialization_version: 3
+              """
+                  with open(f"{repo_path}/feature_store.yaml", "w") as f:
+                      f.write(yaml_content)
+                  return repo_path
+              
+              def create_data(repo_path: str, num_features: int, num_entities: int):
+                  data = {"user_id": [f"user_{i}" for i in range(num_entities + 100)]}
+                  for i in range(num_features):
+                      data[f"f{i}"] = [float(i * j) for j in range(num_entities + 100)]
+                  df = pd.DataFrame(data)
+                  df["event_timestamp"] = pd.Timestamp.now()
+                  df.to_parquet(f"{repo_path}/data.parquet")
+                  
+                  source = FileSource(path=f"{repo_path}/data.parquet", timestamp_field="event_timestamp")
+                  entity = Entity(name="user_id", join_keys=["user_id"])
+                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(num_features)]
+                  fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
+                  
+                  fs = FeatureStore(repo_path=repo_path)
+                  fs.apply([entity, fv])
+                  fs.materialize(start_date=datetime.now() - timedelta(days=1), end_date=datetime.now())
+                  fs.refresh_registry()
+                  return fs, [f"fv:f{i}" for i in range(num_features)]
+              
+              def profile_call(fs, features, entity_rows) -> Dict:
+                  profiler = cProfile.Profile()
+                  start = time.perf_counter()
+                  profiler.enable()
+                  fs.get_online_features(features=features, entity_rows=entity_rows)
+                  profiler.disable()
+                  total_ms = (time.perf_counter() - start) * 1000
+                  
+                  func_times = {}
+                  for (filename, lineno, funcname), (cc, nc, tt, ct, callers) in pstats.Stats(profiler).stats.items():
+                      if funcname not in func_times:
+                          func_times[funcname] = {'calls': 0, 'total_ms': 0, 'cumulative_ms': 0}
+                      func_times[funcname]['calls'] += nc
+                      func_times[funcname]['total_ms'] += tt * 1000
+                      func_times[funcname]['cumulative_ms'] += ct * 1000
+                  
+                  return {'total_ms': total_ms, 'functions': func_times}
+              
+              def categorize(func_times: Dict, total_ms: float) -> Dict:
+                  categories = {
+                      'DB/Store Read': ['online_read', '_get_online_features_from_online_store', 'execute', 'fetchall', 'mget', 'batch_get_item'],
+                      'Protobuf/Serialization': ['_convert_rows_to_protobuf', 'construct_response_feature_vector', 'MessageToDict', 'to_proto', 'from_proto', 'ParseFromString'],
+                      'Entity Processing': ['serialize_entity_key', '_prepare_entities', '_get_entity_key'],
+                      'Timestamp Handling': ['FromDatetime', 'convert_timestamp', '_CheckTimestampValid', 'ToDatetime'],
+                      'Type Checking': ['check_type_internal', 'isinstance', 'builtin_checker_lookup']
+                  }
+                  
+                  result = {cat: {'time_ms': 0, 'pct': 0, 'functions': []} for cat in categories}
+                  result['Other'] = {'time_ms': 0, 'pct': 0, 'functions': []}
+                  
+                  for func, data in func_times.items():
+                      found = False
+                      for cat, patterns in categories.items():
+                          if any(p in func for p in patterns):
+                              result[cat]['time_ms'] += data['total_ms']
+                              result[cat]['functions'].append({'name': func, **data})
+                              found = True
+                              break
+                      if not found and data['total_ms'] > 0.1:
+                          result['Other']['time_ms'] += data['total_ms']
+                          result['Other']['functions'].append({'name': func, **data})
+                  
+                  for cat in result:
+                      result[cat]['pct'] = (result[cat]['time_ms'] / total_ms * 100) if total_ms > 0 else 0
+                      result[cat]['functions'].sort(key=lambda x: x['total_ms'], reverse=True)
+                      result[cat]['functions'] = result[cat]['functions'][:10]
+                  
+                  return result
+              
+              def profile_store(store_type: str, config: Dict, entities: int, features: int, iterations: int) -> Dict:
+                  log(f"Profiling {store_type.upper()} ({entities} entities, {features} features)...")
+                  
+                  repo_path = f"/tmp/profile_{store_type}"
+                  try:
+                      setup_repo(repo_path, store_type, config)
+                      fs, feature_list = create_data(repo_path, features, entities)
+                      entity_rows = [{"user_id": f"user_{i}"} for i in range(entities)]
+                      
+                      # Warmup
+                      for _ in range(3):
+                          fs.get_online_features(features=feature_list, entity_rows=entity_rows)
+                      
+                      # Profile
+                      all_times = []
+                      agg_funcs = defaultdict(lambda: {'calls': 0, 'total_ms': 0})
+                      
+                      for i in range(iterations):
+                          result = profile_call(fs, feature_list, entity_rows)
+                          all_times.append(result['total_ms'])
+                          for func, data in result['functions'].items():
+                              agg_funcs[func]['calls'] += data['calls']
+                              agg_funcs[func]['total_ms'] += data['total_ms']
+                          if (i + 1) % 5 == 0:
+                              print(f"  Progress: {i+1}/{iterations}", flush=True)
+                      
+                      # Average
+                      for func in agg_funcs:
+                          agg_funcs[func]['total_ms'] /= iterations
+                          agg_funcs[func]['calls'] /= iterations
+                      
+                      avg_total = statistics.mean(all_times)
+                      breakdown = categorize(dict(agg_funcs), avg_total)
+                      
+                      return {
+                          'store': store_type,
+                          'entities': entities,
+                          'features': features,
+                          'latency': {
+                              'avg_ms': avg_total,
+                              'p50_ms': sorted(all_times)[len(all_times)//2],
+                              'p99_ms': sorted(all_times)[-1]
+                          },
+                          'breakdown': breakdown,
+                          'top_functions': sorted(
+                              [{'name': k, **v} for k, v in agg_funcs.items()],
+                              key=lambda x: x['total_ms'], reverse=True
+                          )[:20]
+                      }
+                  except Exception as e:
+                      log(f"  ERROR: {e}")
+                      return {'store': store_type, 'error': str(e)}
+              
+              def print_results(result: Dict):
+                  if 'error' in result:
+                      print(f"\n{result['store'].upper()}: ERROR - {result['error']}", flush=True)
+                      return
+                  
+                  lat = result['latency']
+                  print(f"\n{'='*70}", flush=True)
+                  print(f"{result['store'].upper()} - {result['entities']} entities, {result['features']} features", flush=True)
+                  print(f"{'='*70}", flush=True)
+                  print(f"Latency: avg={lat['avg_ms']:.1f}ms | p50={lat['p50_ms']:.1f}ms | p99={lat['p99_ms']:.1f}ms", flush=True)
+                  
+                  print(f"\nBreakdown by Category:", flush=True)
+                  print(f"{'-'*70}", flush=True)
+                  for cat, data in sorted(result['breakdown'].items(), key=lambda x: x[1]['time_ms'], reverse=True):
+                      if data['time_ms'] < 0.1:
+                          continue
+                      print(f"{cat:<30} {data['time_ms']:>8.1f}ms ({data['pct']:>5.1f}%)", flush=True)
+                      for func in data['functions'][:5]:
+                          if func['total_ms'] > 0.1:
+                              print(f"  └─ {func['name'][:35]:<35} {func['total_ms']:>6.1f}ms [{func['calls']:.0f} calls]", flush=True)
+                  
+                  print(f"\nTop 10 Functions:", flush=True)
+                  print(f"{'-'*70}", flush=True)
+                  for func in result['top_functions'][:10]:
+                      pct = (func['total_ms'] / lat['avg_ms'] * 100) if lat['avg_ms'] > 0 else 0
+                      print(f"  {func['name'][:40]:<40} {func['total_ms']:>6.1f}ms ({pct:>4.1f}%)", flush=True)
+              
+              def main():
+                  config = {
+                      'redis_host': os.environ.get('REDIS_HOST', 'redis'),
+                      'redis_port': os.environ.get('REDIS_PORT', '6379'),
+                      'pg_host': os.environ.get('POSTGRES_HOST', 'postgres'),
+                      'pg_port': os.environ.get('POSTGRES_PORT', '5432'),
+                      'pg_db': os.environ.get('POSTGRES_DATABASE', 'feast'),
+                      'pg_user': os.environ.get('POSTGRES_USER', 'feast'),
+                      'pg_pass': os.environ.get('POSTGRES_PASSWORD', 'feast'),
+                      'region': os.environ.get('AWS_DEFAULT_REGION', 'eu-west-1')
+                  }
+                  
+                  entities = int(os.environ.get('PROFILE_ENTITIES', '50'))
+                  features = int(os.environ.get('PROFILE_FEATURES', '200'))
+                  iterations = int(os.environ.get('PROFILE_ITERATIONS', '10'))
+                  
+                  stores = ['sqlite', 'redis', 'postgres']
+                  if os.environ.get('AWS_ACCESS_KEY_ID'):
+                      stores.append('dynamodb')
+                  
+                  print("="*70, flush=True)
+                  print("FEAST BOTTLENECK PROFILER", flush=True)
+                  print("="*70, flush=True)
+                  print(f"Stores: {', '.join(stores)}", flush=True)
+                  print(f"Config: {entities} entities, {features} features, {iterations} iterations", flush=True)
+                  print("="*70, flush=True)
+                  
+                  all_results = {}
+                  for store in stores:
+                      result = profile_store(store, config, entities, features, iterations)
+                      all_results[store] = result
+                      print_results(result)
+                  
+                  # Save results
+                  os.makedirs("/results/profile", exist_ok=True)
+                  output_path = "/results/profile/bottleneck_analysis.json"
+                  with open(output_path, "w") as f:
+                      json.dump(all_results, f, indent=2, default=str)
+                  
+                  print(f"\n{'='*70}", flush=True)
+                  log(f"Results saved to {output_path}")
+                  print("="*70, flush=True)
+              
+              if __name__ == "__main__":
+                  main()
+              PYTHON_EOF
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results

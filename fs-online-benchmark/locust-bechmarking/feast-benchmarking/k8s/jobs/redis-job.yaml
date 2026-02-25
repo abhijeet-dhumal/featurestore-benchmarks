@@ -38,25 +38,33 @@ spec:
               set -e
               export HOME=/tmp
               export PATH=$HOME/.local/bin:$PATH
-              pip install --user -q feast 'redis>=4.0.0' pandas numpy
+              export PYTHONUNBUFFERED=1
               
-              python3 << 'PYTHON_EOF'
-              """
-              Optimized Redis Benchmark with all performance tuning applied.
-              """
-              import json, os, statistics, time
+              echo "=== STEP 1/5: Installing dependencies ==="
+              pip install --user -q feast 'redis>=4.0.0' pandas numpy
+              echo "✓ Dependencies installed"
+              
+              echo "=== STEP 2/5: Running benchmark ==="
+              python3 -u << 'PYTHON_EOF'
+              """Optimized Redis Benchmark with verbose progress."""
+              import cProfile, pstats, io, json, os, shutil, statistics, time, sys
               from datetime import datetime, timedelta
               from dataclasses import dataclass, asdict, field
-              from typing import List
+              from typing import List, Dict, Tuple
               import pandas as pd
               from feast import Entity, FeatureStore, FeatureView, Field, FileSource
               from feast.types import Float64
               
+              def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+              
               @dataclass
               class Result:
-                  store: str
+                  test_type: str
                   num_features: int
                   num_entities: int
+                  num_feature_views: int
+                  online_store: str
+                  transformation_mode: str
                   p50: float
                   p95: float
                   p99: float
@@ -64,11 +72,45 @@ spec:
                   min_val: float
                   max_val: float
                   std_dev: float
+                  rps: float
+                  rph: float
+                  online_read_pct: float
+                  protobuf_convert_pct: float
+                  entity_serial_pct: float
+                  other_pct: float
+                  sla_target_ms: float
                   sla_pass: bool
-                  optimizations: List[str] = field(default_factory=list)
+                  timestamp: str
+                  feast_version: str
+              
+              def profile_request(fs, features, entity_rows) -> Tuple[float, Dict[str, float]]:
+                  profiler = cProfile.Profile()
+                  start = time.perf_counter()
+                  profiler.enable()
+                  fs.get_online_features(features=features, entity_rows=entity_rows)
+                  profiler.disable()
+                  total_ms = (time.perf_counter() - start) * 1000
+                  
+                  stats = pstats.Stats(profiler)
+                  function_times = {}
+                  for func, (cc, nc, tt, ct, callers) in stats.stats.items():
+                      _, _, funcname = func
+                      function_times[funcname] = function_times.get(funcname, 0) + tt * 1000
+                  
+                  online_read = function_times.get('online_read', 0) + function_times.get('_get_online_features_from_online_store', 0)
+                  protobuf = function_times.get('_convert_rows_to_protobuf', 0) + function_times.get('construct_response_feature_vector', 0)
+                  entity_serial = function_times.get('serialize_entity_key', 0)
+                  
+                  breakdown = {
+                      'online_read_pct': (online_read / total_ms * 100) if total_ms > 0 else 0,
+                      'protobuf_convert_pct': (protobuf / total_ms * 100) if total_ms > 0 else 0,
+                      'entity_serial_pct': (entity_serial / total_ms * 100) if total_ms > 0 else 0,
+                  }
+                  breakdown['other_pct'] = max(0, 100 - sum(breakdown.values()))
+                  return total_ms, breakdown
               
               def run():
-                  import shutil
+                  import feast
                   repo = "/tmp/feast_repo"
                   shutil.rmtree(repo, ignore_errors=True)
                   os.makedirs(repo, exist_ok=True)
@@ -76,7 +118,7 @@ spec:
                   redis_host = os.environ.get("REDIS_HOST", "redis")
                   redis_port = os.environ.get("REDIS_PORT", "6379")
                   
-                  # OPTIMIZED config with cache_ttl=0 and entity_key_serialization_version=3
+                  log("=== STEP 3/5: Creating Feast repository ===")
                   config = f"""project: benchmark
               provider: local
               registry:
@@ -89,13 +131,16 @@ spec:
               """
                   with open(f"{repo}/feature_store.yaml", "w") as f:
                       f.write(config)
+                  log(f"✓ Config written: {redis_host}:{redis_port}")
                   
                   NUM_FEATURES = int(os.environ.get("FEATURES", "200"))
                   ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,50,100,500").split(",")]
                   ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
                   WARMUP = int(os.environ.get("WARMUP", "10"))
                   SLA = float(os.environ.get("SLA_P99_MS", "60"))
+                  PROFILE_ITERS = 5
                   
+                  log(f"Creating dataset: {NUM_FEATURES} features, {max(ENTITIES)+100} entities...")
                   max_entities = max(ENTITIES) + 100
                   data = {"user_id": [f"user_{i}" for i in range(max_entities)]}
                   for i in range(NUM_FEATURES):
@@ -103,6 +148,7 @@ spec:
                   df = pd.DataFrame(data)
                   df["event_timestamp"] = pd.Timestamp.now()
                   df.to_parquet(f"{repo}/data.parquet")
+                  log("✓ Dataset created")
                   
                   source = FileSource(path=f"{repo}/data.parquet", timestamp_field="event_timestamp")
                   entity = Entity(name="user_id", join_keys=["user_id"])
@@ -110,50 +156,90 @@ spec:
                   fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
                   
                   fs = FeatureStore(repo_path=repo)
+                  log("Applying feature definitions...")
                   fs.apply([entity, fv])
-                  fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
-                  fs.refresh_registry()
+                  log("✓ Features applied")
                   
+                  log("=== STEP 4/5: Materializing to Redis ===")
+                  fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
+                  log("✓ Materialization complete")
+                  
+                  fs.refresh_registry()
                   features = [f"fv:f{i}" for i in range(NUM_FEATURES)]
                   results = []
-                  optimizations = ["cache_ttl=0", "entity_key_v3", f"iter={ITERATIONS}", f"warmup={WARMUP}"]
                   
-                  print("="*70)
-                  print(f"REDIS BENCHMARK (OPTIMIZED) - {redis_host}:{redis_port}")
-                  print(f"Features: {NUM_FEATURES} | Iterations: {ITERATIONS} | Warmup: {WARMUP}")
-                  print("="*70)
+                  print("=" * 70, flush=True)
+                  print(f"REDIS BENCHMARK - {redis_host}:{redis_port}", flush=True)
+                  print(f"Features: {NUM_FEATURES} | Iterations: {ITERATIONS} | Warmup: {WARMUP}", flush=True)
+                  print("=" * 70, flush=True)
                   
-                  for n in ENTITIES:
+                  log("=== STEP 5/5: Running benchmarks ===")
+                  for idx, n in enumerate(ENTITIES):
+                      log(f"Benchmarking {n} entities ({idx+1}/{len(ENTITIES)})...")
                       rows = [{"user_id": f"user_{i}"} for i in range(n)]
-                      for _ in range(WARMUP):
-                          fs.get_online_features(features=features, entity_rows=rows)
                       
+                      # Warmup with progress
+                      for w in range(WARMUP):
+                          fs.get_online_features(features=features, entity_rows=rows)
+                          if w % 5 == 0:
+                              print(f"  Warmup: {w+1}/{WARMUP}", end='\r', flush=True)
+                      print(f"  Warmup: {WARMUP}/{WARMUP} ✓", flush=True)
+                      
+                      # Main benchmark with progress
                       times = []
-                      for _ in range(ITERATIONS):
+                      for i in range(ITERATIONS):
                           start = time.perf_counter()
                           fs.get_online_features(features=features, entity_rows=rows)
                           times.append((time.perf_counter()-start)*1000)
+                          if (i+1) % 20 == 0:
+                              print(f"  Iteration: {i+1}/{ITERATIONS}", end='\r', flush=True)
+                      print(f"  Iteration: {ITERATIONS}/{ITERATIONS} ✓", flush=True)
                       times.sort()
                       
+                      # Profiling pass
+                      breakdowns = []
+                      for p in range(PROFILE_ITERS):
+                          _, bd = profile_request(fs, features, rows)
+                          breakdowns.append(bd)
+                      avg_breakdown = {k: statistics.mean([b[k] for b in breakdowns]) for k in breakdowns[0]}
+                      
                       p99_idx = int(len(times)*0.99)
-                      r = Result("redis", NUM_FEATURES, n, times[len(times)//2], times[int(len(times)*0.95)],
-                                 times[p99_idx], statistics.mean(times), min(times), max(times),
-                                 statistics.stdev(times) if len(times) > 1 else 0, times[p99_idx] < SLA, optimizations)
+                      r = Result(
+                          test_type="latency", num_features=NUM_FEATURES, num_entities=n,
+                          num_feature_views=1, online_store="redis", transformation_mode=None,
+                          p50=times[len(times)//2], p95=times[int(len(times)*0.95)], p99=times[p99_idx],
+                          mean=statistics.mean(times), min_val=min(times), max_val=max(times),
+                          std_dev=statistics.stdev(times) if len(times) > 1 else 0,
+                          rps=1000/statistics.mean(times) if statistics.mean(times) > 0 else 0, rph=0,
+                          online_read_pct=avg_breakdown['online_read_pct'],
+                          protobuf_convert_pct=avg_breakdown['protobuf_convert_pct'],
+                          entity_serial_pct=avg_breakdown['entity_serial_pct'],
+                          other_pct=avg_breakdown['other_pct'],
+                          sla_target_ms=SLA, sla_pass=times[p99_idx] < SLA,
+                          timestamp=datetime.now().isoformat(), feast_version=feast.__version__
+                      )
                       results.append(r)
-                      status = "PASS" if r.sla_pass else "FAIL"
-                      print(f"{n:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms | std={r.std_dev:5.1f}ms [{status}]")
+                      status = "✅ PASS" if r.sla_pass else "❌ FAIL"
+                      print(f"  → {n:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms [{status}]", flush=True)
                   
                   os.makedirs("/results/redis", exist_ok=True)
-                  output = {"store": "redis", "timestamp": datetime.now().isoformat(),
-                            "config": {"features": NUM_FEATURES, "iterations": ITERATIONS, "warmup": WARMUP,
-                                       "sla_ms": SLA, "optimizations": optimizations},
-                            "latency": [asdict(r) for r in results]}
+                  output = {
+                      "summary": {
+                          "store": "redis", "feast_version": feast.__version__,
+                          "timestamp": datetime.now().isoformat(),
+                          "total_tests": len(results),
+                          "sla_pass_rate": sum(1 for r in results if r.sla_pass) / len(results) * 100
+                      },
+                      "latency": [asdict(r) for r in results],
+                      "fv_scaling": [], "transformations": [], "throughput": []
+                  }
                   with open("/results/redis/benchmark_results.json", "w") as f:
                       json.dump(output, f, indent=2)
                   
-                  print(f"\nSaved: /results/redis/benchmark_results.json")
+                  print("=" * 70, flush=True)
                   passed = sum(1 for r in results if r.sla_pass)
-                  print(f"SLA Pass Rate: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
+                  log(f"Complete! SLA Pass Rate: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
+                  log(f"Results saved to /results/redis/benchmark_results.json")
               
               if __name__ == "__main__":
                   run()

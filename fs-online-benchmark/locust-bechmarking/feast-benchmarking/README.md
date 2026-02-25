@@ -222,7 +222,7 @@ All benchmarks run with these optimizations:
 
 ### Generated Charts
 
-After running benchmarks, 10 charts are saved to `results/charts/`:
+After running benchmarks, 8 charts are saved to `results/charts/`:
 
 | Chart | Description |
 |-------|-------------|
@@ -232,10 +232,8 @@ After running benchmarks, 10 charts are saved to `results/charts/`:
 | `04_time_breakdown.png` | Stacked bar: where time is spent |
 | `05_sla_gap_analysis.png` | Multiplier vs 60ms target |
 | `06_executive_summary.png` | 4-panel summary |
-| `07_production_sla.png` | Production SLA analysis with annotations |
-| `08_time_distribution.png` | Donut charts by component |
-| `09_online_read_breakdown.png` | Internal online_read() timing |
-| `10_optimization_targets.png` | Potential savings per fix |
+| `07_production_sla.png` | Production SLA analysis (50 & 200 entities) |
+| `08_time_distribution.png` | Donut charts by component (actual data) |
 
 ## Manual Commands
 
@@ -277,6 +275,20 @@ oc delete pod results-reader -n feast-benchmark
     --names sqlite redis postgres dynamodb \
     --output results/charts
 ```
+
+### Function-Level Profiling
+
+For detailed breakdown of where time is spent at the function level:
+
+```bash
+# Profile at 200 entities, 200 features
+./.venv/bin/python profile_breakdown.py --entities 200 --features 200 --iterations 10
+
+# Save results to JSON
+./.venv/bin/python profile_breakdown.py --entities 200 --features 200 --output results/profile.json
+```
+
+This uses cProfile to identify exactly which functions consume time (useful for optimization).
 
 ## Troubleshooting
 

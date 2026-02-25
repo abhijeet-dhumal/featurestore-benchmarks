@@ -13,7 +13,8 @@ This benchmark framework is a fork of [featurestoreorg/featurestore-benchmarks](
 - **Unified Python benchmark** (`unified_benchmark.py`) for consistent cross-store testing
 - **Kubernetes deployment** with kustomize overlays for in-cluster benchmarking
 - **Automated orchestration** (`run_full_benchmark.sh`) for end-to-end execution
-- **Visualization suite** (`generate_charts.py`) generating 10 analysis charts
+- **Visualization suite** (`generate_charts.py`) generating 11 analysis charts
+- **Bottleneck profiler** (`analyze_bottlenecks.py`) for function-level analysis
 
 **Upstream repo:** [featurestoreorg/featurestore-benchmarks](https://github.com/featurestoreorg/featurestore-benchmarks)  
 **Our fork:** [abhijeet-dhumal/featurestore-benchmarks](https://github.com/abhijeet-dhumal/featurestore-benchmarks/tree/perf-online-feat) (branch: `perf-online-feat`)
@@ -117,7 +118,7 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 | **Entity Counts** | 1, 10, 50, 100, 200, 500 | Tests scaling behavior |
 | **Iterations** | 100 | Statistical significance for p99 |
 | **Warmup** | 10 | Eliminates cold-start noise |
-| **Online Stores** | SQLite, Redis, Postgres, DynamoDB | Common production backends |
+| **Online Stores** | Redis, Postgres, DynamoDB | Production-grade backends |
 
 ---
 
@@ -357,126 +358,148 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 ---
 
-### 08_time_distribution.png
-**Component Time Distribution (Donut Charts)**
+### 08_bottleneck_breakdown.png
+**Function-Level Bottleneck Analysis**
 
-![08_time_distribution](08_time_distribution.png)
+![08_bottleneck_breakdown](08_bottleneck_breakdown.png)
 
 **Graph Parameters:**
 | Element | Description |
 |---------|-------------|
-| **One donut per store** | Redis, SQLite, Postgres, DynamoDB |
-| **Slice size** | Percentage of total time in each component |
-| **Colors** | Consistent across donuts for comparison |
-| **Center label** | Total latency for that store |
-
-**Component Colors:**
-| Color | Component | Fixable? |
-|-------|-----------|----------|
-| Blue | Online Store Read | Store-dependent |
-| Orange | Protobuf Serialization | PR #6015 |
-| Green | Entity Key Encoding | PR #6006 |
-| Red | Timestamp Conversion | PR #6003 |
-| Purple | Registry Lookups | PR #6014 |
+| **One panel per store** | Redis, Postgres, DynamoDB (only benchmarked stores) |
+| **Horizontal bars** | Top 12 time-consuming functions |
+| **Bar labels** | Time (ms), percentage of total, call count |
+| **Title per panel** | Store name with total latency (mean and p99) |
+| **Config box** | Shows "50 entities × 200 features" |
+| **SLA status** | [PASS] or [FAIL] based on p99 vs 60ms |
 
 **How to Read:**
-- Larger slice = more time spent there
-- Compare same-colored slices across donuts
-- If orange (serialization) is largest everywhere, SDK is bottleneck
+- Longer bars = more time spent in that function
+- Percentages show relative contribution to total latency
+- Call counts in brackets (e.g., [500 calls]) indicate hot paths
+- Compare same functions across stores to identify store-specific bottlenecks
 
 **Why This Matters:**
-- Shows bottleneck is consistent across ALL stores
-- Proves changing store won't solve the problem
-- Identifies exactly which PRs will help most
+- Identifies exact functions to optimize
+- Shows which functions dominate across ALL stores (SDK bottlenecks)
+- Reveals store-specific vs common issues
 
-**Key Takeaway:** Protobuf/serialization is the dominant bottleneck across all stores (40-50% of time).
+**Key Takeaway:** `_convert_rows_to_protobuf`, `construct_response_feature_vector`, and `FromDatetime` are top bottlenecks across all stores.
 
 ---
 
-### 09_online_read_breakdown.png
-**Online Read Internal Timing**
+### 09_category_comparison.png
+**Time Breakdown by Category**
 
-![09_online_read_breakdown](09_online_read_breakdown.png)
+![09_category_comparison](09_category_comparison.png)
 
 **Graph Parameters:**
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Online store names |
+| **X-axis** | Categories: DB/Store Read, Protobuf/Serialization, Timestamp Handling, Type Checking, Other |
 | **Y-axis** | Time in milliseconds |
-| **Stacked segments** | Breakdown of `online_read()` internals |
-
-**Internal Components:**
-| Component | What It Measures |
-|-----------|------------------|
-| **Connection** | Time to establish/reuse connection |
-| **Query** | Time to execute the read query |
-| **Parse** | Time to parse response into Python objects |
-| **Network** | Round-trip network latency |
+| **Grouped bars** | One bar per store within each category |
+| **Bar labels** | Time (ms) and percentage |
+| **Legend** | Store name with total latency and p99 SLA status |
+| **Red dashed line** | 60ms SLA reference |
+| **Config box** | Shows entity × feature configuration |
 
 **How to Read:**
-- Compare total bar heights to see fastest store
-- Compare segments to see WHERE each store spends time
-- Redis: mostly query, little parse
-- Postgres: significant query + parse overhead
+- Compare bar heights within each category to see which store is fastest
+- Look at "Other" category - if it's largest, there are uncategorized bottlenecks
+- Bars above 60ms line indicate that single category exceeds SLA
 
 **Why This Matters:**
-- Explains WHY Redis is faster (simpler protocol, less parsing)
-- Shows Postgres overhead is in SQL parsing, not network
-- DynamoDB has network overhead (AWS API calls)
+- Groups functions into actionable categories
+- Shows which category contributes most to latency
+- Helps prioritize optimization areas
 
-**Key Takeaway:** Redis has lowest read latency; Postgres has highest due to SQL overhead.
+**Key Takeaway:** "Other" category is significant (55-80%), indicating type checking, validation, and miscellaneous overhead needs investigation.
 
 ---
 
-### 10_optimization_targets.png
-**Optimization Potential**
+### 10_optimization_waterfall.png
+**Time Breakdown Waterfall**
 
-![10_optimization_targets](10_optimization_targets.png)
+![10_optimization_waterfall](10_optimization_waterfall.png)
 
 **Graph Parameters:**
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Optimization / PR name |
-| **Y-axis** | Potential latency savings in milliseconds |
-| **Bar height** | Expected reduction from each fix |
-| **Stacked total** | Combined savings if all PRs merged |
-
-**Optimization Details:**
-| PR | Issue | What It Fixes | Expected Savings |
-|----|-------|---------------|------------------|
-| #6003 | Timestamp conversion | Redundant datetime parsing per feature×entity | 5-10ms |
-| #6006 | Entity key serialization | Double serialization of entity keys | 3-5ms |
-| #6014 | Registry lookups | O(n×m) redundant `get_entity()` calls | 1-2ms |
-| #6015 | MessageToDict | Slow Protobuf reflection → direct access | 9ms (4x faster) |
+| **One row per store** | Redis, Postgres, DynamoDB |
+| **Stacked segments** | Time spent in each category, laid out horizontally |
+| **Segment colors** | Consistent category colors across stores |
+| **Labels inside segments** | Category name, time (ms), percentage |
+| **Red dashed line** | 60ms SLA reference |
+| **Title per row** | Store with total latency and SLA status |
 
 **How to Read:**
-- Taller bars = higher impact optimization
-- Sum of all bars = total potential savings
-- Prioritize tallest bars first
+- Width of each segment = time spent in that category
+- Total bar width = total latency
+- Segments to the left of the 60ms line are within SLA budget
+- Segments extending past 60ms show where optimization is needed
 
 **Why This Matters:**
-- Quantifies ROI of each PR
-- Guides review prioritization
-- Sets expectations for post-merge benchmarks
+- Visual "budget" view of where time goes
+- Shows cumulative effect of each category
+- Clear indication of how much needs to be trimmed to meet SLA
 
-**Key Takeaway:** Combined PRs can save ~15-25ms per request. PR #6015 (MessageToDict) has highest impact.
+**Key Takeaway:** For all stores, "Other" + "Protobuf" segments push the total past 60ms SLA.
+
+---
+
+### 11_function_heatmap.png
+**Function Time Heatmap**
+
+![11_function_heatmap](11_function_heatmap.png)
+
+**Graph Parameters:**
+| Element | Description |
+|---------|-------------|
+| **X-axis** | Top function names (truncated to 30 chars) |
+| **Y-axis** | Store names with total latency and SLA status |
+| **Cell color** | Heat intensity (darker = more time) |
+| **Cell labels** | Time in milliseconds |
+| **Color scale** | Yellow (fast) → Red (slow) |
+| **Config box** | Shows entity × feature configuration |
+
+**How to Read:**
+- Darker cells = more time spent in that function for that store
+- Consistent dark column = function is slow across ALL stores (SDK issue)
+- Dark row = that store is generally slower
+- Compare cells horizontally to find store-specific bottlenecks
+
+**Why This Matters:**
+- Cross-store comparison at function level
+- Identifies functions that are slow only on certain stores (store-specific optimization)
+- Highlights functions slow everywhere (SDK optimization targets)
+
+**Key Takeaway:** `FromDatetime`, `_convert_rows_to_protobuf`, and `construct_response_feature_vector` show up as hot spots across all stores.
 
 ---
 
 ## Summary Table
 
+### Benchmark Charts (01-07)
+
 | Chart | Purpose | Key Insight |
 |-------|---------|-------------|
 | 01 | Latency by entities | Only 1 entity meets SLA |
 | 02 | Scaling curves | O(n) scaling behavior |
-| 03 | Store ranking | Redis > SQLite > Postgres > DynamoDB |
-| 04 | Time breakdown | 80% serialization, 20% DB |
-| 05 | SLA gap | 16-24x over SLA at 500 entities |
-| 06 | Executive summary | Quick 4-panel overview |
-| 07 | Production SLA | Detailed gap analysis |
-| 08 | Time distribution | Donut breakdown per store |
-| 09 | Online read | Internal read timing |
-| 10 | Optimization | 15-25ms savings potential |
+| 03 | Store ranking | Redis > Postgres > DynamoDB |
+| 04 | Time breakdown | Stacked view of time by category (from profiling) |
+| 05 | SLA gap | 2.6-3.8x over SLA at 50 entities |
+| 06 | Executive summary | Quick 4-panel overview (50 entities target) |
+| 07 | Production SLA | Detailed gap analysis (50 & 200 entities) |
+
+### Bottleneck Analysis Charts (08-11)
+
+| Chart | Purpose | Key Insight |
+|-------|---------|-------------|
+| 08 | Bottleneck breakdown | Top functions by time per store |
+| 09 | Category comparison | Grouped bars comparing categories across stores |
+| 10 | Optimization waterfall | Cumulative time breakdown for each store |
+| 11 | Function heatmap | Cross-store function time comparison |
 
 ---
 
@@ -486,42 +509,70 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Finding | Evidence | Impact |
 |---------|----------|--------|
-| **SLA only met for 1 entity** | Chart 01, 07 | Cannot support batch requests |
-| **Redis is fastest** | Chart 03 | 12-45% faster than alternatives |
-| **Serialization is bottleneck** | Chart 04, 08 | 80% of time is NOT in DB |
+| **SLA only met for 1 entity** | Chart 01, 06, 07 | Cannot support batch requests |
+| **Redis is fastest** | Chart 03, 09 | ~40% faster than Postgres/DynamoDB |
+| **"Other" category dominates** | Chart 08, 10 | 55-80% of time is uncategorized overhead |
+| **Protobuf/serialization significant** | Chart 09, 10 | 15-17% of time in serialization |
 | **Linear scaling O(n)** | Chart 02 | Per-entity overhead ~2ms |
-| **16-24x over SLA at 500 entities** | Chart 05 | Major gap to close |
+| **2.6-3.8x over SLA at 50 entities** | Chart 06, 07 | Gap to close for production target |
 
 ### Root Cause Analysis
 
-The benchmark data reveals that **database choice is NOT the primary bottleneck**:
+The benchmark data reveals that **database choice is NOT the primary bottleneck**.
+
+**Detailed Function-Level Profiling (200 entities, 200 features, SQLite):**
+
+| Function | Time | % | PR |
+|----------|------|---|---|
+| `infra.online_read` | 22.85ms | 12.1% | Store-specific |
+| `utils.construct_response_feature_vector` | 22.07ms | 11.7% | - |
+| `utils._convert_rows_to_protobuf` | 19.76ms | 10.5% | PR #6015 |
+| **`FromDatetime`** | **18.90ms** | **10.0%** | **PR #6003** |
+| `infra.convert_timestamp` | 7.58ms | 4.0% | PR #6003 |
+| `infra.get_online_features` | 7.00ms | 3.7% | - |
+| `_CheckTimestampValid` | 2.93ms | 1.6% | PR #6003 |
+| `infra.serialize_entity_key` | 1.09ms | 0.6% | PR #6006 |
+| Other (type checking, validation) | 86ms | 45.6% | - |
+| **TOTAL** | **188ms** | **100%** | |
+
+**Grouped by Category:**
 
 ```
-Time Breakdown (100 entities, Redis):
-├── Online Store Read:     45ms  (22%)  ← Database is fast
-├── Protobuf Serialization: 80ms  (40%)  ← BOTTLENECK
-├── Entity Key Encoding:    35ms  (17%)  ← BOTTLENECK
-├── Timestamp Conversion:   25ms  (12%)  ← BOTTLENECK
-├── Registry Lookups:        8ms   (4%)  ← Fixable
-└── Other (network, etc.):  10ms   (5%)
-    ────────────────────────────────────
-    Total:                 203ms
+Time Breakdown (200 entities, 200 features):
+├── Other (type checks, validation):  66.5ms (35%)  ← Significant overhead
+├── Online Store Read:                22.9ms (12%)  ← Database is fast
+├── Protobuf/Serialization:           20.8ms (11%)  ← PR #6015
+├── Timestamp Functions:              29.4ms (16%)  ← PR #6003 (combined)
+├── Entity Key Handling:               1.1ms  (1%)  ← PR #6006
+└── Registry/Metadata:                 0.8ms  (<1%) ← PR #6014
+    ────────────────────────────────────────────────
+    Total:                           188.0ms
 ```
 
-**80%+ of latency is in SDK code (serialization, encoding), not database I/O.**
+**Key Insight:** Timestamp-related functions (`FromDatetime`, `convert_timestamp`, `_CheckTimestampValid`) account for **29.4ms (16%)** - this is what PR #6003 targets.
+
+**To reproduce this profiling locally:**
+```bash
+python profile_breakdown.py --entities 200 --features 200 --iterations 10
+```
 
 ---
 
 ## What This Means for Our Agenda
 
-### Current State vs Requirements
+### Current State vs Requirements (50 entities × 200 features)
 
-| Requirement | Target | Current (Redis) | Gap |
-|-------------|--------|-----------------|-----|
-| p99 Latency (1 entity) | 60ms | 15ms | ✅ Met |
-| p99 Latency (10 entities) | 60ms | 74ms | ❌ 1.2x over |
-| p99 Latency (100 entities) | 60ms | 202ms | ❌ 3.4x over |
-| p99 Latency (500 entities) | 60ms | 989ms | ❌ 16.5x over |
+| Store | p99 Latency | SLA (60ms) | Gap |
+|-------|-------------|------------|-----|
+| **Redis** | 156ms | ❌ FAIL | 2.6x over |
+| **Postgres** | 216ms | ❌ FAIL | 3.6x over |
+| **DynamoDB** | 229ms | ❌ FAIL | 3.8x over |
+
+| Requirement | Target | Best (Redis) | Status |
+|-------------|--------|--------------|--------|
+| p99 @ 1 entity | 60ms | ~15ms | ✅ Met |
+| p99 @ 50 entities | 60ms | 156ms | ❌ 2.6x over |
+| p99 @ 200 entities | 60ms | ~400ms | ❌ ~6.7x over |
 | Throughput | 3M txn/hr | Not tested | ⚠️ Pending |
 
 ### Implications
