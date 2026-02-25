@@ -178,7 +178,7 @@ The `run_full_benchmark.sh` script automates the entire process:
 4. **Runs SQLite locally** - SQLite doesn't need K8s infrastructure
 5. **Waits for completion** - monitors job status until done or timeout
 6. **Collects results** - copies JSON results from PVC to local `results/` dir
-7. **Generates charts** - creates 10 PNG visualizations in `results/charts/`
+7. **Generates charts** - creates 11 PNG visualizations in `results/charts/`
 
 ---
 
@@ -212,28 +212,43 @@ All benchmarks run with these optimizations:
 
 | Entities | SQLite | Redis | Postgres | DynamoDB | SLA (60ms) |
 |----------|--------|-------|----------|----------|------------|
-| 1 | 15ms | **15ms** | 60ms | 22ms | ✅ |
-| 10 | 93ms | **74ms** | 80ms | 116ms | ❌ |
-| 50 | 166ms | **142ms** | 157ms | 192ms | ❌ |
-| 100 | 254ms | **202ms** | 354ms | 311ms | ❌ |
-| 500 | 1104ms | **989ms** | 1322ms | 1438ms | ❌ |
+| 1 | 16ms | **15ms** | 22ms | 25ms | ✅ |
+| 10 | 51ms | **45ms** | 65ms | 73ms | ❌ |
+| 50 | **149ms** | 156ms | 216ms | 229ms | ❌ |
+| 100 | 275ms | **271ms** | 412ms | 457ms | ❌ |
+| 200 | 522ms | **521ms** | 808ms | 885ms | ❌ |
+| 500 | 1252ms | **1256ms** | 2048ms | 2218ms | ❌ |
 
-**Ranking:** Redis > SQLite > Postgres > DynamoDB
+**Ranking (@ 50 entities):** SQLite > Redis > Postgres > DynamoDB
+
+**Production Target (50 entities × 200 features):**
+- Best: SQLite 149ms (2.5x over SLA)
+- All stores FAIL 60ms SLA at 50+ entities
 
 ### Generated Charts
 
-After running benchmarks, 8 charts are saved to `results/charts/`:
+After running benchmarks, 11 charts are saved to `results/charts/`:
+
+**Benchmark Charts (01-07):**
 
 | Chart | Description |
 |-------|-------------|
 | `01_latency_by_entities.png` | P99 latency grouped by entity count |
-| `02_scaling_curves.png` | Log-log scaling behavior |
+| `02_scaling_curves.png` | Log-log scaling behavior (O(n) proof) |
 | `03_store_ranking.png` | Store ranking at key entity counts |
-| `04_time_breakdown.png` | Stacked bar: where time is spent |
+| `04_time_breakdown.png` | Stacked bar: where time is spent (from profiling) |
 | `05_sla_gap_analysis.png` | Multiplier vs 60ms target |
-| `06_executive_summary.png` | 4-panel summary |
+| `06_executive_summary.png` | 4-panel summary (50 entities target) |
 | `07_production_sla.png` | Production SLA analysis (50 & 200 entities) |
-| `08_time_distribution.png` | Donut charts by component (actual data) |
+
+**Bottleneck Analysis Charts (08-11):**
+
+| Chart | Description |
+|-------|-------------|
+| `08_bottleneck_breakdown.png` | Top functions by time per store |
+| `09_category_comparison.png` | Grouped bars comparing categories across stores |
+| `10_optimization_waterfall.png` | Cumulative time breakdown per store |
+| `11_function_heatmap.png` | Cross-store function time comparison |
 
 ## Manual Commands
 
@@ -281,14 +296,20 @@ oc delete pod results-reader -n feast-benchmark
 For detailed breakdown of where time is spent at the function level:
 
 ```bash
-# Profile at 200 entities, 200 features
-./.venv/bin/python profile_breakdown.py --entities 200 --features 200 --iterations 10
+# Run bottleneck analyzer (profiles all stores)
+./.venv/bin/python analyze_bottlenecks.py --entities 50 --features 200 --iterations 10
 
-# Save results to JSON
-./.venv/bin/python profile_breakdown.py --entities 200 --features 200 --output results/profile.json
+# Results saved to: results/profile/bottleneck_analysis.json
 ```
 
-This uses cProfile to identify exactly which functions consume time (useful for optimization).
+The profiling data is automatically used by charts 04, 08-11 to show accurate time breakdown by category:
+- **DB/Store Read**: Time in online_read(), database queries
+- **Protobuf/Serialization**: MessageToDict, _convert_rows_to_protobuf
+- **Timestamp Handling**: FromDatetime, convert_timestamp
+- **Type Checking**: isinstance, validation
+- **Other**: Miscellaneous overhead
+
+**Note:** Charts 08-11 require profiling data. Run `analyze_bottlenecks.py` first, or the charts will use estimated values.
 
 ## Troubleshooting
 
