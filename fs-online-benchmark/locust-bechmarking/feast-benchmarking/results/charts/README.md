@@ -23,9 +23,9 @@ This benchmark framework is a fork of [featurestoreorg/featurestore-benchmarks](
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| **Feast SDK** | 0.60.0 | Latest stable at time of testing |
-| **Python** | 3.12 | Required for performance |
-| **Protobuf** | 4.x | Used for feature serialization |
+| Feast SDK | 0.60.0 | Latest stable at time of testing |
+| Python | 3.12 | Required for performance |
+| Protobuf | 4.x | Used for feature serialization |
 
 ### Dataset Configuration
 
@@ -43,16 +43,17 @@ Our benchmark uses a **synthetic dataset** generated at runtime for consistent, 
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| **Entity** | `user_id` (STRING) | Common use case (user/driver/item ID) |
-| **Feature Count** | 200 (configurable) | Realistic for ML models |
-| **Feature Type** | All `Float64` | Consistent for fair comparison |
-| **Feature View** | Single (`fv_0`) | Isolates retrieval performance |
-| **Feature Names** | `fv0_f0`, `fv0_f1`, ... `fv0_f199` | Generated programmatically |
-| **Data Volume** | 500+ entities | Pre-materialized before benchmark |
-| **Data Source** | Parquet file (generated) | FileSource with timestamp field |
-| **TTL** | 1 day | Standard expiration |
+| Entity | `user_id` (STRING) | Common use case (user/driver/item ID) |
+| Feature Count | 200 (configurable) | Realistic for ML models |
+| Feature Type | All `Float64` | Consistent for fair comparison |
+| Feature View | Single (`fv_0`) | Isolates retrieval performance |
+| Feature Names | `fv0_f0`, `fv0_f1`, ... `fv0_f199` | Generated programmatically |
+| Data Volume | 500+ entities | Pre-materialized before benchmark |
+| Data Source | Parquet file (generated) | FileSource with timestamp field |
+| TTL | 1 day | Standard expiration |
 
 **Data Generation (from `unified_benchmark.py`):**
+
 ```python
 # Entity definition
 user = Entity(
@@ -78,21 +79,21 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Aspect | NYC Taxi (Upstream) | Synthetic (Our Fork) |
 |--------|---------------------|----------------------|
-| **Features** | ~20 mixed types | 200 Float64 |
-| **Records** | 500 fixed | Configurable |
-| **Reproducibility** | Requires download | Generated on-the-fly |
-| **Feature count** | Limited | Matches production (200) |
-| **Type variance** | Mixed (noisy) | Consistent (fair comparison) |
+| Features | ~20 mixed types | 200 Float64 |
+| Records | 500 fixed | Configurable |
+| Reproducibility | Requires download | Generated on-the-fly |
+| Feature count | Limited | Matches production (200) |
+| Type variance | Mixed (noisy) | Consistent (fair comparison) |
 
 **Why we chose synthetic:**
 
 | Design Choice | Reason |
 |---------------|--------|
-| **200 features** | Matches production requirement (not 20) |
-| **All Float64** | Eliminates type serialization variance for fair store comparison |
-| **Configurable entities** | Test 1 to 500+ entities per request |
-| **No external deps** | No network download, runs anywhere |
-| **Reproducible** | Same data every run for consistent benchmarks |
+| 200 features | Matches production requirement (not 20) |
+| All Float64 | Eliminates type serialization variance for fair store comparison |
+| Configurable entities | Test 1 to 500+ entities per request |
+| No external deps | No network download, runs anywhere |
+| Reproducible | Same data every run for consistent benchmarks |
 
 ---
 
@@ -114,11 +115,20 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Parameter | Value | Why |
 |-----------|-------|-----|
-| **Features** | 200 | Realistic production feature count |
-| **Entity Counts** | 1, 10, 50, 100, 200, 500 | Tests scaling behavior |
-| **Iterations** | 100 | Statistical significance for p99 |
-| **Warmup** | 10 | Eliminates cold-start noise |
-| **Online Stores** | Redis, Postgres, DynamoDB | Production-grade backends |
+| Features | 200 | Realistic production feature count |
+| Entity Counts | 1, 10, 50, 100, 200, 500 | Tests scaling behavior |
+| Iterations | 100-500 (store-specific) | Statistical significance + reliability |
+| Warmup | 10-30 (store-specific) | Eliminates cold-start noise |
+| Online Stores | SQLite, Redis, Postgres, DynamoDB | All supported backends |
+
+### Store-Specific Configuration (for CV < 15%)
+
+| Store | Iterations | Warmup | Expected CV |
+|-------|------------|--------|-------------|
+| SQLite | 200 | 10 | ~12% |
+| Redis | 300 | 20 | ~15% |
+| PostgreSQL | 300 | 25 | ~15% |
+| DynamoDB | 500 | 30 | ~13% |
 
 ---
 
@@ -128,11 +138,11 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Metric | Definition | What It Means |
 |--------|------------|---------------|
-| **p50 (median)** | 50% of requests are faster than this | Typical user experience |
-| **p95** | 95% of requests are faster than this | Good indicator of consistent performance |
-| **p99** | 99% of requests are faster than this | **SLA metric** - worst case for most users |
-| **Mean** | Average latency | Can be skewed by outliers |
-| **Std Dev** | Variation in latency | Lower = more predictable |
+| p50 (median) | 50% of requests are faster than this | Typical user experience |
+| p95 | 95% of requests are faster than this | Good indicator of consistent performance |
+| p99 | 99% of requests are faster than this | SLA metric - worst case for most users |
+| Mean | Average latency | Can be skewed by outliers |
+| Std Dev | Variation in latency | Lower = more predictable |
 
 **Why p99?** Production SLAs use p99 because it represents the worst experience for 99% of users. If p99 is 60ms, only 1 in 100 requests will be slower.
 
@@ -140,9 +150,9 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Pattern | What It Means | Implication |
 |---------|---------------|-------------|
-| **O(1)** | Constant time regardless of entities | Ideal - no scaling issues |
-| **O(n)** | Linear scaling with entities | Per-entity overhead exists |
-| **O(n²)** | Quadratic scaling | Serious algorithmic issue |
+| O(1) | Constant time regardless of entities | Ideal - no scaling issues |
+| O(n) | Linear scaling with entities | Per-entity overhead exists |
+| O(n²) | Quadratic scaling | Serious algorithmic issue |
 
 **Current finding:** Feast shows O(n) scaling - latency grows linearly with entity count.
 
@@ -156,12 +166,13 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![01_latency_by_entities](01_latency_by_entities.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Entity count (1, 10, 50, 100, 200, 500) - number of entities per request |
-| **Y-axis** | P99 latency in milliseconds - 99th percentile response time |
-| **Bars** | Grouped by entity count, colored by store (Redis=blue, SQLite=orange, Postgres=green, DynamoDB=red) |
-| **Red dashed line** | 60ms SLA target - bars below this line = PASS |
+| X-axis | Entity count (1, 10, 50, 100, 200, 500) - number of entities per request |
+| Y-axis | P99 latency in milliseconds - 99th percentile response time |
+| Bars | Grouped by entity count, colored by store (Redis=blue, SQLite=orange, Postgres=green, DynamoDB=red) |
+| Red dashed line | 60ms SLA target - bars below this line = PASS |
 
 **How to Read:**
 - Compare bar heights within each group to see which store is fastest at that entity count
@@ -183,12 +194,13 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![02_scaling_curves](02_scaling_curves.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis (log scale)** | Entity count (1 to 500) - logarithmic scale |
-| **Y-axis (log scale)** | P99 latency in ms - logarithmic scale |
-| **Lines** | One per store, showing latency growth pattern |
-| **Slope** | Indicates scaling complexity: slope=1 means O(n), slope=2 means O(n²) |
+| X-axis (log scale) | Entity count (1 to 500) - logarithmic scale |
+| Y-axis (log scale) | P99 latency in ms - logarithmic scale |
+| Lines | One per store, showing latency growth pattern |
+| Slope | Indicates scaling complexity: slope=1 means O(n), slope=2 means O(n²) |
 
 **How to Read:**
 - **Straight line on log-log** = polynomial scaling (O(n^slope))
@@ -212,12 +224,13 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![03_store_ranking](03_store_ranking.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Online store names |
-| **Y-axis** | P99 latency in milliseconds |
-| **Bar groups** | Separate bars for different entity counts (1, 100, 500) |
-| **Bar height** | Lower = faster = better |
+| X-axis | Online store names |
+| Y-axis | P99 latency in milliseconds |
+| Bar groups | Separate bars for different entity counts (1, 100, 500) |
+| Bar height | Lower = faster = better |
 
 **How to Read:**
 - Compare bars within same entity count to rank stores
@@ -230,8 +243,8 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 - DynamoDB's managed convenience comes with performance cost
 
 **Key Takeaway:** 
-- **Ranking:** Redis > SQLite > Postgres > DynamoDB
-- Redis is 12-45% faster than alternatives at scale
+- **Ranking (@ 50 entities):** SQLite (149ms) > Redis (156ms) > Postgres (216ms) > DynamoDB (229ms)
+- SQLite/Redis are ~30-35% faster than Postgres/DynamoDB at scale
 
 ---
 
@@ -241,20 +254,22 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![04_time_breakdown](04_time_breakdown.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Online store names |
-| **Y-axis** | Total latency in milliseconds |
-| **Stacked segments** | Time spent in each component |
-| **Colors** | Blue=Online Read, Orange=Serialization, Green=Entity Encoding, Purple=Other |
+| X-axis | Online store names |
+| Y-axis | Total latency in milliseconds |
+| Stacked segments | Time spent in each component |
+| Colors | Blue=Online Read, Orange=Serialization, Green=Entity Encoding, Purple=Other |
 
 **Component Definitions:**
+
 | Component | What It Measures | Code Location |
 |-----------|------------------|---------------|
-| **Online Store Read** | Time to fetch data from Redis/Postgres/etc | `online_store.online_read()` |
-| **Serialization** | Protobuf → Python dict conversion | `MessageToDict()`, response encoding |
-| **Entity Key Encoding** | Converting entity IDs to storage keys | `serialize_entity_key()` |
-| **Other** | Registry lookups, network overhead, etc | Various |
+| Online Store Read | Time to fetch data from Redis/Postgres/etc | `online_store.online_read()` |
+| Serialization | Protobuf → Python dict conversion | `MessageToDict()`, response encoding |
+| Entity Key Encoding | Converting entity IDs to storage keys | `serialize_entity_key()` |
+| Other | Registry lookups, network overhead, etc | Various |
 
 **How to Read:**
 - Segment height = time spent in that component
@@ -277,15 +292,16 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![05_sla_gap_analysis](05_sla_gap_analysis.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Entity count |
-| **Y-axis** | Multiplier over SLA (actual_latency / 60ms) |
-| **Lines** | One per store |
-| **Reference line at y=1** | Values above this line = SLA failure |
-| **Value 1.0** | Exactly at 60ms SLA |
-| **Value 2.0** | 2x over SLA (120ms actual) |
-| **Value 16.5** | 16.5x over SLA (990ms actual) |
+| X-axis | Entity count |
+| Y-axis | Multiplier over SLA (actual_latency / 60ms) |
+| Lines | One per store |
+| Reference line at y=1 | Values above this line = SLA failure |
+| Value 1.0 | Exactly at 60ms SLA |
+| Value 2.0 | 2x over SLA (120ms actual) |
+| Value 16.5 | 16.5x over SLA (990ms actual) |
 
 **How to Read:**
 - y=1 means exactly meeting SLA
@@ -308,12 +324,13 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![06_executive_summary](06_executive_summary.png)
 
 **Graph Parameters:**
+
 | Panel | Content | Purpose |
 |-------|---------|---------|
-| **Top-left** | P99 latency bars by entity count | Quick latency comparison |
-| **Top-right** | Scaling curves (log-log) | Growth pattern |
-| **Bottom-left** | SLA pass/fail matrix | Green=pass, Red=fail |
-| **Bottom-right** | Store ranking summary | Winner at each scale |
+| Top-left | P99 latency bars by entity count | Quick latency comparison |
+| Top-right | Scaling curves (log-log) | Growth pattern |
+| Bottom-left | SLA pass/fail matrix | Green=pass, Red=fail |
+| Bottom-right | Store ranking summary | Winner at each scale |
 
 **How to Read:**
 - Scan all 4 panels for complete picture
@@ -335,13 +352,14 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![07_production_sla](07_production_sla.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Entity count (log scale) |
-| **Y-axis** | P99 latency in ms (log scale) |
-| **Red horizontal band** | 60ms SLA zone - target area |
-| **Annotations** | Callouts showing exact values and gaps |
-| **Color coding** | Green points=pass, Red points=fail |
+| X-axis | Entity count (log scale) |
+| Y-axis | P99 latency in ms (log scale) |
+| Red horizontal band | 60ms SLA zone - target area |
+| Annotations | Callouts showing exact values and gaps |
+| Color coding | Green points=pass, Red points=fail |
 
 **How to Read:**
 - Points in the red band = meeting SLA
@@ -364,14 +382,15 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![08_bottleneck_breakdown](08_bottleneck_breakdown.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **One panel per store** | Redis, Postgres, DynamoDB (only benchmarked stores) |
-| **Horizontal bars** | Top 12 time-consuming functions |
-| **Bar labels** | Time (ms), percentage of total, call count |
-| **Title per panel** | Store name with total latency (mean and p99) |
-| **Config box** | Shows "50 entities × 200 features" |
-| **SLA status** | [PASS] or [FAIL] based on p99 vs 60ms |
+| One panel per store | Redis, Postgres, DynamoDB (only benchmarked stores) |
+| Horizontal bars | Top 12 time-consuming functions |
+| Bar labels | Time (ms), percentage of total, call count |
+| Title per panel | Store name with total latency (mean and p99) |
+| Config box | Shows "50 entities × 200 features" |
+| SLA status | [PASS] or [FAIL] based on p99 vs 60ms |
 
 **How to Read:**
 - Longer bars = more time spent in that function
@@ -394,15 +413,16 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![09_category_comparison](09_category_comparison.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Categories: DB/Store Read, Protobuf/Serialization, Timestamp Handling, Type Checking, Other |
-| **Y-axis** | Time in milliseconds |
-| **Grouped bars** | One bar per store within each category |
-| **Bar labels** | Time (ms) and percentage |
-| **Legend** | Store name with total latency and p99 SLA status |
-| **Red dashed line** | 60ms SLA reference |
-| **Config box** | Shows entity × feature configuration |
+| X-axis | Categories: DB/Store Read, Protobuf/Serialization, Timestamp Handling, Type Checking, Other |
+| Y-axis | Time in milliseconds |
+| Grouped bars | One bar per store within each category |
+| Bar labels | Time (ms) and percentage |
+| Legend | Store name with total latency and p99 SLA status |
+| Red dashed line | 60ms SLA reference |
+| Config box | Shows entity × feature configuration |
 
 **How to Read:**
 - Compare bar heights within each category to see which store is fastest
@@ -424,14 +444,15 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![10_optimization_waterfall](10_optimization_waterfall.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **One row per store** | Redis, Postgres, DynamoDB |
-| **Stacked segments** | Time spent in each category, laid out horizontally |
-| **Segment colors** | Consistent category colors across stores |
-| **Labels inside segments** | Category name, time (ms), percentage |
-| **Red dashed line** | 60ms SLA reference |
-| **Title per row** | Store with total latency and SLA status |
+| One row per store | Redis, Postgres, DynamoDB |
+| Stacked segments | Time spent in each category, laid out horizontally |
+| Segment colors | Consistent category colors across stores |
+| Labels inside segments | Category name, time (ms), percentage |
+| Red dashed line | 60ms SLA reference |
+| Title per row | Store with total latency and SLA status |
 
 **How to Read:**
 - Width of each segment = time spent in that category
@@ -454,14 +475,15 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 ![11_function_heatmap](11_function_heatmap.png)
 
 **Graph Parameters:**
+
 | Element | Description |
 |---------|-------------|
-| **X-axis** | Top function names (truncated to 30 chars) |
-| **Y-axis** | Store names with total latency and SLA status |
-| **Cell color** | Heat intensity (darker = more time) |
-| **Cell labels** | Time in milliseconds |
-| **Color scale** | Yellow (fast) → Red (slow) |
-| **Config box** | Shows entity × feature configuration |
+| X-axis | Top function names (truncated to 30 chars) |
+| Y-axis | Store names with total latency and SLA status |
+| Cell color | Heat intensity (darker = more time) |
+| Cell labels | Time in milliseconds |
+| Color scale | Yellow (fast) → Red (slow) |
+| Config box | Shows entity × feature configuration |
 
 **How to Read:**
 - Darker cells = more time spent in that function for that store
@@ -486,9 +508,9 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 |-------|---------|-------------|
 | 01 | Latency by entities | Only 1 entity meets SLA |
 | 02 | Scaling curves | O(n) scaling behavior |
-| 03 | Store ranking | Redis > Postgres > DynamoDB |
+| 03 | Store ranking | SQLite > Redis > Postgres > DynamoDB |
 | 04 | Time breakdown | Stacked view of time by category (from profiling) |
-| 05 | SLA gap | 2.6-3.8x over SLA at 50 entities |
+| 05 | SLA gap | 2.5-3.8x over SLA at 50 entities |
 | 06 | Executive summary | Quick 4-panel overview (50 entities target) |
 | 07 | Production SLA | Detailed gap analysis (50 & 200 entities) |
 
@@ -509,12 +531,12 @@ entity_rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
 
 | Finding | Evidence | Impact |
 |---------|----------|--------|
-| **SLA only met for 1 entity** | Chart 01, 06, 07 | Cannot support batch requests |
-| **Redis is fastest** | Chart 03, 09 | ~40% faster than Postgres/DynamoDB |
-| **"Other" category dominates** | Chart 08, 10 | 55-80% of time is uncategorized overhead |
-| **Protobuf/serialization significant** | Chart 09, 10 | 15-17% of time in serialization |
-| **Linear scaling O(n)** | Chart 02 | Per-entity overhead ~2ms |
-| **2.6-3.8x over SLA at 50 entities** | Chart 06, 07 | Gap to close for production target |
+| SLA only met for 1 entity | Chart 01, 06, 07 | Cannot support batch requests |
+| SQLite/Redis are fastest | Chart 03, 09 | ~30-35% faster than Postgres/DynamoDB |
+| "Other" category dominates | Chart 08, 10 | 55-80% of time is uncategorized overhead |
+| Protobuf/serialization significant | Chart 09, 10 | 15-17% of time in serialization |
+| Linear scaling O(n) | Chart 02 | Per-entity overhead ~2ms |
+| 2.5-3.8x over SLA at 50 entities | Chart 06, 07 | Gap to close for production target |
 
 ### Root Cause Analysis
 
@@ -523,17 +545,17 @@ The benchmark data reveals that **database choice is NOT the primary bottleneck*
 **Detailed Function-Level Profiling (200 entities, 200 features, SQLite):**
 
 | Function | Time | % | PR |
-|----------|------|---|---|
-| `infra.online_read` | 22.85ms | 12.1% | Store-specific |
-| `utils.construct_response_feature_vector` | 22.07ms | 11.7% | - |
-| `utils._convert_rows_to_protobuf` | 19.76ms | 10.5% | PR #6015 |
-| **`FromDatetime`** | **18.90ms** | **10.0%** | **PR #6003** |
-| `infra.convert_timestamp` | 7.58ms | 4.0% | PR #6003 |
-| `infra.get_online_features` | 7.00ms | 3.7% | - |
-| `_CheckTimestampValid` | 2.93ms | 1.6% | PR #6003 |
-| `infra.serialize_entity_key` | 1.09ms | 0.6% | PR #6006 |
+|----------|------|-----|---|
+| infra.online_read | 22.85ms | 12.1% | Store-specific |
+| utils.construct_response_feature_vector | 22.07ms | 11.7% | - |
+| utils._convert_rows_to_protobuf | 19.76ms | 10.5% | PR #6015 |
+| FromDatetime | 18.90ms | 10.0% | PR #6003 |
+| infra.convert_timestamp | 7.58ms | 4.0% | PR #6003 |
+| infra.get_online_features | 7.00ms | 3.7% | - |
+| _CheckTimestampValid | 2.93ms | 1.6% | PR #6003 |
+| infra.serialize_entity_key | 1.09ms | 0.6% | PR #6006 |
 | Other (type checking, validation) | 86ms | 45.6% | - |
-| **TOTAL** | **188ms** | **100%** | |
+| **TOTAL** | **188ms** | **100%** | - |
 
 **Grouped by Category:**
 
@@ -552,6 +574,7 @@ Time Breakdown (200 entities, 200 features):
 **Key Insight:** Timestamp-related functions (`FromDatetime`, `convert_timestamp`, `_CheckTimestampValid`) account for **29.4ms (16%)** - this is what PR #6003 targets.
 
 **To reproduce this profiling locally:**
+
 ```bash
 python profile_breakdown.py --entities 200 --features 200 --iterations 10
 ```
@@ -564,15 +587,16 @@ python profile_breakdown.py --entities 200 --features 200 --iterations 10
 
 | Store | p99 Latency | SLA (60ms) | Gap |
 |-------|-------------|------------|-----|
-| **Redis** | 156ms | ❌ FAIL | 2.6x over |
-| **Postgres** | 216ms | ❌ FAIL | 3.6x over |
-| **DynamoDB** | 229ms | ❌ FAIL | 3.8x over |
+| SQLite | 149ms | ❌ FAIL | 2.5x over |
+| Redis | 156ms | ❌ FAIL | 2.6x over |
+| Postgres | 216ms | ❌ FAIL | 3.6x over |
+| DynamoDB | 229ms | ❌ FAIL | 3.8x over |
 
-| Requirement | Target | Best (Redis) | Status |
-|-------------|--------|--------------|--------|
-| p99 @ 1 entity | 60ms | ~15ms | ✅ Met |
-| p99 @ 50 entities | 60ms | 156ms | ❌ 2.6x over |
-| p99 @ 200 entities | 60ms | ~400ms | ❌ ~6.7x over |
+| Requirement | Target | Best (SQLite) | Status |
+|-------------|--------|---------------|--------|
+| p99 @ 1 entity | 60ms | ~17ms | ✅ Met |
+| p99 @ 50 entities | 60ms | 149ms | ❌ 2.5x over |
+| p99 @ 200 entities | 60ms | ~463ms | ❌ ~7.7x over |
 | Throughput | 3M txn/hr | Not tested | ⚠️ Pending |
 
 ### Implications
@@ -586,14 +610,25 @@ python profile_breakdown.py --entities 200 --features 200 --iterations 10
 
 ## Next Steps
 
-### Immediate Actions (Blocked on PR Merges)
+### Immediate Actions - Pending Items
 
-| Priority | Action | Owner | Status | Expected Impact |
-|----------|--------|-------|--------|-----------------|
-| 🔴 Critical | Merge [PR #6003](https://github.com/feast-dev/feast/pull/6003) | Upstream | ⏳ Review | -5 to -10ms |
-| 🔴 Critical | Merge [PR #6006](https://github.com/feast-dev/feast/pull/6006) | Upstream | ⏳ Review | -3 to -5ms |
-| 🔴 Critical | Merge [PR #6014](https://github.com/feast-dev/feast/pull/6014) | Upstream | ⏳ Review | -1 to -2ms |
-| 🔴 Critical | Merge [PR #6015](https://github.com/feast-dev/feast/pull/6015) | Upstream | ⏳ Review | -9ms (4x faster) |
+| Priority | Action | Status | Effort |
+|----------|--------|--------|--------|
+| 🔴 P0 | Add concurrent load testing to harness | Pending | 4hr |
+| 🔴 P0 | Run feature count variation (5/50/200 features) | Pending | 2hr |
+| 🟠 P1 | Add Feature View count parameter (1/5/20 FVs) | Pending | 3hr |
+| 🟠 P1 | Add on-demand transformations toggle | Pending | 2hr |
+| 🟡 P2 | Verify async path in online stores | Pending | 2hr |
+| 🟡 P2 | Create formal bottleneck report document | Pending | 3hr |
+
+### PRs Submitted to Feast (Pending Review)
+
+| PR | Fix | Expected Impact |
+|----|-----|-----------------|
+| [#6003](https://github.com/feast-dev/feast/pull/6003) | Timestamp conversion | -5 to -10ms |
+| [#6006](https://github.com/feast-dev/feast/pull/6006) | Entity key serialization | -3 to -5ms |
+| [#6014](https://github.com/feast-dev/feast/pull/6014) | Registry lookup | -1 to -2ms |
+| [#6015](https://github.com/feast-dev/feast/pull/6015) | MessageToDict (4x faster) | -9ms |
 
 **Combined expected improvement: ~15-25ms per request**
 
@@ -602,7 +637,7 @@ python profile_breakdown.py --entities 200 --features 200 --iterations 10
 | Priority | Action | Purpose |
 |----------|--------|---------|
 | 🟠 High | Re-run benchmarks | Validate improvements |
-| 🟠 High | Throughput testing | Validate 3M txn/hr |
+| 🟠 High | Throughput testing | Validate 3M txn/hr target |
 | 🟡 Medium | Concurrent load testing | Multi-client behavior |
 | 🟡 Medium | Horizontal scaling | Test 4, 8, 16 replicas |
 
@@ -610,10 +645,10 @@ python profile_breakdown.py --entities 200 --features 200 --iterations 10
 
 | Option | Description | Trade-off |
 |--------|-------------|-----------|
-| **Batch API** | New endpoint for bulk requests | Requires API change |
-| **Streaming** | gRPC streaming instead of request/response | Client SDK changes |
-| **Caching layer** | Cache hot features in-memory | Staleness risk |
-| **Custom serialization** | Replace Protobuf with faster format | Compatibility |
+| Batch API | New endpoint for bulk requests | Requires API change |
+| Streaming | gRPC streaming instead of request/response | Client SDK changes |
+| Caching layer | Cache hot features in-memory | Staleness risk |
+| Custom serialization | Replace Protobuf with faster format | Compatibility |
 
 ---
 
@@ -658,4 +693,11 @@ oc apply -k k8s/stores
 - [#6013](https://github.com/feast-dev/feast/issues/6013) - Slow MessageToDict serialization
 
 **JIRA:**
-- [RHOAIENG-50013](https://issues.redhat.com/browse/RHOAIENG-50013) - Performance tracking issue
+- [RHOAIENG-46061](https://issues.redhat.com/browse/RHOAIENG-46061) - Epic: Performance Optimization
+- [RHOAIENG-50008](https://issues.redhat.com/browse/RHOAIENG-50008) - Test harness setup
+- [RHOAIENG-50010](https://issues.redhat.com/browse/RHOAIENG-50010) - Baseline benchmarks
+- [RHOAIENG-50013](https://issues.redhat.com/browse/RHOAIENG-50013) - Bottleneck identification (In Progress)
+
+---
+
+*Last updated: Feb 25, 2026*

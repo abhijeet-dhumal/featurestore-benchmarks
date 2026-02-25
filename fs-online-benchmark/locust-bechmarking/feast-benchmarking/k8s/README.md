@@ -65,18 +65,27 @@ oc logs -n feast-benchmark -l store=redis --tail=100
 |-----------|---------|-------------|
 | FEATURES | 200 | Number of features |
 | ENTITIES | 1,10,50,100,200,500 | Entity counts |
-| ITERATIONS | 100 | Test iterations |
-| WARMUP | 10 | Warmup iterations |
+| ITERATIONS | 300 | Test iterations (store-specific in jobs) |
+| WARMUP | 20 | Warmup iterations (store-specific in jobs) |
 | SLA_MS | 60 | SLA target (ms) |
+
+### Store-Specific Defaults (for reliability)
+
+| Store | Iterations | Warmup | Rationale |
+|-------|------------|--------|-----------|
+| SQLite | 200 | 10 | Lower variance, local store |
+| Redis | 300 | 20 | Network variance, connection pooling warmup |
+| PostgreSQL | 300 | 25 | Connection pool + query cache warmup |
+| DynamoDB | 500 | 30 | Higher variance due to AWS API latency |
 
 ### Overlays
 
 | Overlay | Use Case | Entities | Iterations |
 |---------|----------|----------|------------|
-| quick | Fast testing | 1,10,100 | 20 |
-| statefarm | SLA validation | 1,10,50,100,200,500 | 100 |
-| production | Production test | 1,10,50,100,200,500 | 100 |
-| full | Complete matrix | 1,10,50,100,200,500,1000 | 100 |
+| quick | Fast testing | 1,10,100 | 50 |
+| statefarm | SLA validation | 1,10,50,100,200,500 | 300 |
+| production | Production test | 1,10,50,100,200,500 | 300 |
+| full | Complete matrix | 1,10,50,100,200,500,1000 | 500 |
 
 ```bash
 # Use overlay
@@ -106,6 +115,16 @@ oc exec results-reader -n feast-benchmark -- cat /results/redis/benchmark_result
 oc delete pod results-reader -n feast-benchmark
 ```
 
+## Reliability Metrics
+
+Results now include Coefficient of Variation (CV) to assess measurement reliability:
+
+| CV | Status | Action |
+|----|--------|--------|
+| < 15% | ✓ Good | Results reliable |
+| 15-25% | ⚠ Warning | Consider re-running with more iterations |
+| > 25% | ✗ Poor | Re-run required |
+
 ## Cleanup
 
 ```bash
@@ -115,3 +134,7 @@ oc delete jobs -n feast-benchmark -l app=feast-benchmark
 # Delete everything
 oc delete namespace feast-benchmark
 ```
+
+---
+
+*Last updated: Feb 25, 2026*

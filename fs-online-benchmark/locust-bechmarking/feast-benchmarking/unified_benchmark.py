@@ -475,8 +475,13 @@ entity_key_serialization_version: 3
                 )
                 results.append(result)
                 
+                # Calculate reliability metrics
+                cv = (result.std_dev / result.mean * 100) if result.mean > 0 else 0
+                cv_status = "✓" if cv < 15 else "⚠" if cv < 25 else "✗"
+                
                 sla = "✅" if result.sla_pass else "❌"
                 print(f"  p50: {result.p50:.1f}ms | p95: {result.p95:.1f}ms | p99: {result.p99:.1f}ms {sla}")
+                print(f"  mean: {result.mean:.1f}ms | std: {result.std_dev:.1f}ms | CV: {cv:.1f}% {cv_status}")
                 if profile:
                     print(f"  Breakdown: read={breakdown['online_read_pct']:.0f}% | proto={breakdown['protobuf_convert_pct']:.0f}% | ts={breakdown.get('timestamp_pct', 0):.0f}% | serial={breakdown['entity_serial_pct']:.0f}%")
         
@@ -1065,10 +1070,14 @@ Environment Variables (alternative to CLI args):
     # Test Control
     # =========================================================================
     control_group = parser.add_argument_group('Test Control')
-    control_group.add_argument("--iterations", type=int, default=100,
-                              help="Iterations per test configuration (default: 100 - optimized)")
-    control_group.add_argument("--warmup", type=int, default=10,
-                              help="Warmup iterations before measurement (default: 10 - optimized)")
+    control_group.add_argument("--iterations", type=int, default=300,
+                              help="Iterations per test configuration (default: 300 for reliability)")
+    control_group.add_argument("--warmup", type=int, default=20,
+                              help="Warmup iterations before measurement (default: 20 for stability)")
+    control_group.add_argument("--passes", type=int, default=1,
+                              help="Number of benchmark passes (default: 1, use 3 for higher reliability)")
+    control_group.add_argument("--cv-threshold", type=float, default=15.0,
+                              help="Coefficient of variation threshold %% for reliability warning (default: 15)")
     control_group.add_argument("--profile", action='store_true', default=False,
                               help="Enable profiling to capture function breakdown (adds overhead)")
     control_group.add_argument("--profile-iterations", type=int, default=5,
@@ -1120,6 +1129,25 @@ Environment Variables (alternative to CLI args):
         if not args.aws_access_key_id and not os.environ.get("AWS_ACCESS_KEY_ID"):
             print("WARNING: No AWS credentials provided. Using default credential chain.")
             print("         Set --aws-access-key-id/--aws-secret-access-key or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY")
+    
+    # =========================================================================
+    # Store-specific iteration/warmup defaults for reliability
+    # =========================================================================
+    STORE_DEFAULTS = {
+        'sqlite':   {'iterations': 200, 'warmup': 10},   # Low variance, local
+        'redis':    {'iterations': 300, 'warmup': 20},   # Fast, moderate variance
+        'postgres': {'iterations': 300, 'warmup': 25},   # Network + connection pool
+        'dynamodb': {'iterations': 500, 'warmup': 30},   # High variance (AWS network)
+    }
+    
+    # Apply store-specific defaults only if user didn't override
+    store_defaults = STORE_DEFAULTS.get(args.store, {'iterations': 300, 'warmup': 20})
+    if args.iterations == 300:  # Default wasn't changed
+        args.iterations = store_defaults['iterations']
+    if args.warmup == 20:  # Default wasn't changed
+        args.warmup = store_defaults['warmup']
+    
+    print(f"Store-specific config for {args.store}: {args.iterations} iterations, {args.warmup} warmup")
     
     if args.store == "redis":
         print(f"Redis: {args.redis_host}:{args.redis_port} (SSL: {args.redis_ssl})")

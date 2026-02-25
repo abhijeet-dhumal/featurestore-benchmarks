@@ -55,9 +55,9 @@ STORES="sqlite redis postgres dynamodb"
 NAMESPACE="feast-benchmark"
 FEATURES=200
 ENTITIES="1 10 50 100 200 500"
-ITERATIONS=100
-WARMUP=10
-TIMEOUT=900
+ITERATIONS=300      # Increased for reliability (CV < 15%)
+WARMUP=20           # More warmup for stability
+TIMEOUT=1800        # Increased for higher iterations
 OUTPUT_DIR="results"
 SKIP_K8S=false
 SKIP_CHARTS=false
@@ -304,12 +304,24 @@ run_local_benchmark() {
     local entities_arg=$(echo "$ENTITIES" | tr ' ' ' ')
     local output_path="${SCRIPT_DIR}/${OUTPUT_DIR}/${store}"
     
+    # Store-specific iterations for reliability (can be overridden by CLI)
+    local store_iterations=$ITERATIONS
+    local store_warmup=$WARMUP
+    case $store in
+        sqlite)   store_iterations=${ITERATIONS:-200}; store_warmup=${WARMUP:-10} ;;
+        redis)    store_iterations=${ITERATIONS:-300}; store_warmup=${WARMUP:-20} ;;
+        postgres) store_iterations=${ITERATIONS:-300}; store_warmup=${WARMUP:-25} ;;
+        dynamodb) store_iterations=${ITERATIONS:-500}; store_warmup=${WARMUP:-30} ;;
+    esac
+    
+    log_info "Store $store: $store_iterations iterations, $store_warmup warmup"
+    
     run_cmd "./.venv/bin/python unified_benchmark.py \
         --store $store \
         --features $FEATURES \
         --entities $entities_arg \
-        --iterations $ITERATIONS \
-        --warmup $WARMUP \
+        --iterations $store_iterations \
+        --warmup $store_warmup \
         --profile \
         --output $output_path"
 }

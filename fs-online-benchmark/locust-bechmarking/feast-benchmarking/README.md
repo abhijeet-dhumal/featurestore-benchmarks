@@ -66,9 +66,9 @@ feast-benchmarking/
 | `--namespace` | `feast-benchmark` | Kubernetes namespace |
 | `--features` | `200` | Number of features |
 | `--entities` | `"1 10 50 100 200 500"` | Entity counts to test |
-| `--iterations` | `100` | Iterations per test |
-| `--warmup` | `10` | Warmup iterations |
-| `--timeout` | `900` | Job timeout (seconds) |
+| `--iterations` | `300` | Iterations per test (store-specific defaults apply) |
+| `--warmup` | `20` | Warmup iterations (store-specific defaults apply) |
+| `--timeout` | `1800` | Job timeout (seconds) |
 | `--output-dir` | `results` | Results directory |
 | `--skip-k8s` | `false` | Run SQLite locally only |
 | `--skip-charts` | `false` | Skip chart generation |
@@ -203,27 +203,42 @@ All benchmarks run with these optimizations:
 | Features | 200 |
 | Entities | 1, 10, 50, 100, 200, 500 |
 | Stores | SQLite, Redis, PostgreSQL, DynamoDB |
-| Iterations | 100 |
-| Warmup | 10 |
+| Iterations | 300 (increased for reliability) |
+| Warmup | 20 (increased for stability) |
+
+### Reliability Metrics
+
+Results now include **Coefficient of Variation (CV)** to assess measurement reliability:
+
+| CV | Status | Meaning |
+|----|--------|---------|
+| < 15% | ✓ Good | Reliable measurement |
+| 15-25% | ⚠ Warning | Moderate variance |
+| > 25% | ✗ Poor | High variance, re-run recommended |
+
+**Target: CV < 15%** for production-quality benchmarks.
 
 ## Results
 
-### Latest Benchmark (200 features, p99 latency)
+### Latest Benchmark (200 features, p99 latency) - Feb 25, 2026
 
 | Entities | SQLite | Redis | Postgres | DynamoDB | SLA (60ms) |
 |----------|--------|-------|----------|----------|------------|
-| 1 | 16ms | **15ms** | 22ms | 25ms | ✅ |
-| 10 | 51ms | **45ms** | 65ms | 73ms | ❌ |
+| 1 | 17ms | 19ms | **15ms** | 34ms | ✅ |
+| 10 | **76ms** | 94ms | 79ms | 119ms | ❌ |
 | 50 | **149ms** | 156ms | 216ms | 229ms | ❌ |
-| 100 | 275ms | **271ms** | 412ms | 457ms | ❌ |
-| 200 | 522ms | **521ms** | 808ms | 885ms | ❌ |
-| 500 | 1252ms | **1256ms** | 2048ms | 2218ms | ❌ |
+| 100 | 241ms | **229ms** | 297ms | 338ms | ❌ |
+| 200 | 463ms | **417ms** | 586ms | 643ms | ❌ |
+| 500 | **1041ms** | 1053ms | 1369ms | 1541ms | ❌ |
 
-**Ranking (@ 50 entities):** SQLite > Redis > Postgres > DynamoDB
+**Ranking (@ 50 entities):** SQLite (149ms) > Redis (156ms) > Postgres (216ms) > DynamoDB (229ms)
 
 **Production Target (50 entities × 200 features):**
 - Best: SQLite 149ms (2.5x over SLA)
-- All stores FAIL 60ms SLA at 50+ entities
+- Worst: DynamoDB 229ms (3.8x over SLA)
+- All stores FAIL 60ms SLA at 10+ entities
+
+**Key Finding:** Bottleneck is Python SDK overhead (40-80% of time), NOT database reads.
 
 ### Generated Charts
 
@@ -339,3 +354,33 @@ oc get pvc benchmark-results -n feast-benchmark
 # List available results
 oc exec results-reader -n feast-benchmark -- ls -la /results/
 ```
+
+---
+
+## Related Documents
+
+| Document | Purpose |
+|----------|---------|
+| `PERFORMANCE_ASSESSMENT.md` | Full performance analysis with findings and recommendations |
+| `BENCHMARK_STATUS.md` | Current project status and JIRA alignment |
+| `NEXT_ACTIONS.md` | Prioritized task list for next implementation steps |
+| `results/charts/README.md` | Detailed chart descriptions and interpretation guide |
+| `k8s/README.md` | Kubernetes deployment guide |
+
+## JIRA Tracking
+
+| Ticket | Summary | Status |
+|--------|---------|--------|
+| [RHOAIENG-46061](https://issues.redhat.com/browse/RHOAIENG-46061) | Epic: Performance Optimization | New |
+| [RHOAIENG-50008](https://issues.redhat.com/browse/RHOAIENG-50008) | Test harness setup | 80% |
+| [RHOAIENG-50010](https://issues.redhat.com/browse/RHOAIENG-50010) | Baseline benchmarks | 70% |
+| [RHOAIENG-50013](https://issues.redhat.com/browse/RHOAIENG-50013) | Bottleneck identification | In Progress |
+
+## PRs Submitted to Feast
+
+| PR | Fix | Status |
+|----|-----|--------|
+| [#6003](https://github.com/feast-dev/feast/pull/6003) | Timestamp conversion O(n×m) → O(n) | Pending review |
+| [#6006](https://github.com/feast-dev/feast/pull/6006) | Entity key serialization dedup | Pending review |
+| [#6014](https://github.com/feast-dev/feast/pull/6014) | Registry lookup optimization | Pending review |
+| [#6015](https://github.com/feast-dev/feast/pull/6015) | MessageToDict optimization (~4x faster) | Pending review |

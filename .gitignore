@@ -136,3 +136,6 @@ keyFile.json
 
 # delombok dir
 delombok
+
+# Feast benchmark internal docs
+fs-online-benchmark/locust-bechmarking/feast-benchmarking/docs/

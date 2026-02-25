@@ -135,8 +135,8 @@ spec:
                   
                   NUM_FEATURES = int(os.environ.get("FEATURES", "200"))
                   ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,50,100,500").split(",")]
-                  ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
-                  WARMUP = int(os.environ.get("WARMUP", "10"))
+                  ITERATIONS = int(os.environ.get("ITERATIONS", "300"))
+                  WARMUP = int(os.environ.get("WARMUP", "20"))
                   SLA = float(os.environ.get("SLA_P99_MS", "60"))
                   PROFILE_ITERS = 5
                   
@@ -220,7 +220,10 @@ spec:
                       )
                       results.append(r)
                       status = "✅ PASS" if r.sla_pass else "❌ FAIL"
+                      cv = (r.std_dev / r.mean * 100) if r.mean > 0 else 0
+                      cv_status = "✓" if cv < 15 else "⚠" if cv < 25 else "✗"
                       print(f"  → {n:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms [{status}]", flush=True)
+                      print(f"          mean={r.mean:7.1f}ms | std={r.std_dev:6.1f}ms | CV={cv:5.1f}% {cv_status}", flush=True)
                   
                   os.makedirs("/results/redis", exist_ok=True)
                   output = {
