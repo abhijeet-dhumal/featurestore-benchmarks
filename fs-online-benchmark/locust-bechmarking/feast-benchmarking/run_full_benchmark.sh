@@ -6,14 +6,18 @@
 # DESCRIPTION:
 #   Single source of truth for running end-to-end performance evaluation
 #   across all online stores (SQLite, Redis, PostgreSQL, DynamoDB).
+#   Supports comparing multiple Feast versions/branches in parallel.
 #
 # USAGE:
 #   ./run_full_benchmark.sh [OPTIONS]
 #
 # OPTIONS:
 #   --config <file>       Config file path (default: benchmark.config.yaml)
+#   --compare             Compare all refs defined in config (parallel builds)
+#   --refs <list>         Specific refs to run (comma-separated, e.g. "baseline,optimized")
 #   --feast-git-ref <ref> Feast git reference (branch/tag/commit) - triggers rebuild
 #   --feast-git-url <url> Feast git repository URL
+#   --base-image <image>  Pre-built base image for fast builds (optional)
 #   --stores <list>       Stores to benchmark (default: from config)
 #   --namespace <ns>      Kubernetes namespace (default: from config)
 #   --features <n>        Number of features (default: from config)
@@ -25,13 +29,26 @@
 #   --skip-build          Skip image build even if git ref specified
 #   --skip-k8s            Skip K8s jobs, run locally only (SQLite)
 #   --skip-charts         Skip chart generation
+#   --stage <stage>       Run specific stage only: build, benchmark, charts, or all (default: all)
+#   --scenario <name>     Benchmark scenario: entity_scaling, feature_scaling, or all (default: entity_scaling)
 #   --dry-run             Show what would be done without executing
 #   --verbose             Enable verbose output
 #   --help                Show this help message
 #
+# SCENARIOS:
+#   entity_scaling   - Fixed 200 features, vary entities (1, 10, 50, 100, 200, 500)
+#   feature_scaling  - Fixed 50 entities, vary features (5, 25, 50, 100, 150, 200)
+#   all              - Run both scenarios
+#
+# STAGES:
+#   build      - Build Docker images for each feast reference
+#   benchmark  - Run K8s benchmark jobs and collect results
+#   charts     - Generate charts from existing results
+#   all        - Run all stages (default)
+#
 # CONFIG FILE:
 #   The config file (benchmark.config.yaml) contains all default settings
-#   including feast source, database connections, and benchmark parameters.
+#   including feast references, database connections, and benchmark parameters.
 #   Command-line arguments override config file settings.
 #
 # PREREQUISITES:
@@ -41,23 +58,43 @@
 #   - AWS credentials secret (for DynamoDB)
 #
 # EXAMPLES:
-#   # Run with defaults from config file
+#   # Run default ref from config
 #   ./run_full_benchmark.sh
+#
+#   # Compare all refs defined in config (builds images in parallel)
+#   ./run_full_benchmark.sh --compare
+#
+#   # Compare specific refs only
+#   ./run_full_benchmark.sh --refs "baseline,optimized"
 #
 #   # Run with custom feast branch (triggers rebuild)
 #   ./run_full_benchmark.sh --feast-git-ref perf/my-optimization
 #
-#   # Run with custom config file
-#   ./run_full_benchmark.sh --config production.config.yaml
-#
 #   # Run only Redis and Postgres
 #   ./run_full_benchmark.sh --stores "redis postgres"
 #
-#   # Use git ref without rebuilding (use existing image)
-#   ./run_full_benchmark.sh --feast-git-ref my-branch --skip-build
-#
 #   # Dry run to see commands
 #   ./run_full_benchmark.sh --dry-run --verbose
+#
+#   # Run only build stage (create images)
+#   ./run_full_benchmark.sh --compare --stage build
+#
+#   # Run only benchmark stage (skip build, run jobs)
+#   ./run_full_benchmark.sh --compare --stage benchmark
+#
+#   # Generate charts from existing results (no K8s needed)
+#   ./run_full_benchmark.sh --compare --stage charts
+#
+# OUTPUT STRUCTURE:
+#   results/
+#   ├── {ref_name}/           # Per-reference results
+#   │   ├── sqlite/
+#   │   ├── redis/
+#   │   ├── postgres/
+#   │   ├── dynamodb/
+#   │   └── charts/
+#   └── comparison/           # Cross-ref comparison (--compare mode)
+#       └── charts/
 #
 #===============================================================================
 
@@ -67,6 +104,8 @@ set -euo pipefail
 # Configuration Defaults (overridden by config file, then CLI args)
 #-------------------------------------------------------------------------------
 CONFIG_FILE=""
+COMPARE_MODE=false
+REFS_TO_RUN=""
 FEAST_GIT_REF=""
 FEAST_GIT_URL=""
 STORES=""
@@ -82,6 +121,14 @@ SKIP_K8S=false
 SKIP_CHARTS=false
 DRY_RUN=false
 VERBOSE=false
+STAGE="all"  # all, build, benchmark, charts
+SCENARIO=""  # entity_scaling, feature_scaling, all (empty = use default from config)
+CHARTS_OUTPUT=""  # Set during execution
+BASE_IMAGE=""  # Optional: pre-built base image for fast builds (e.g., quay.io/user/feast-benchmark-base:latest)
+
+# Multi-ref support
+CURRENT_REF=""
+CURRENT_REF_OUTPUT=""
 
 # Script directory (for relative paths)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -139,8 +186,11 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --config)        CONFIG_FILE="$2"; shift 2 ;;
+            --compare)       COMPARE_MODE=true; shift ;;
+            --refs)          REFS_TO_RUN="$2"; shift 2 ;;
             --feast-git-ref) FEAST_GIT_REF="$2"; shift 2 ;;
             --feast-git-url) FEAST_GIT_URL="$2"; shift 2 ;;
+            --base-image)    BASE_IMAGE="$2"; shift 2 ;;
             --stores)        STORES="$2"; shift 2 ;;
             --namespace)     NAMESPACE="$2"; shift 2 ;;
             --features)      FEATURES="$2"; shift 2 ;;
@@ -152,6 +202,8 @@ parse_args() {
             --skip-build)    SKIP_BUILD=true; shift ;;
             --skip-k8s)      SKIP_K8S=true; shift ;;
             --skip-charts)   SKIP_CHARTS=true; shift ;;
+            --stage)         STAGE="$2"; shift 2 ;;
+            --scenario)      SCENARIO="$2"; shift 2 ;;
             --dry-run)       DRY_RUN=true; shift ;;
             --verbose)       VERBOSE=true; shift ;;
             --help|-h)       show_help ;;
@@ -173,9 +225,14 @@ load_config() {
     
     log_info "Loading config from: $config_path"
     
+    # Use venv Python if available (has PyYAML), otherwise system python3
+    local PYTHON_CMD="python3"
+    if [[ -f "${SCRIPT_DIR}/.venv/bin/python" ]]; then
+        PYTHON_CMD="${SCRIPT_DIR}/.venv/bin/python"
+    fi
+    
     # Parse YAML config using Python (handles complex YAML safely)
-    local config_json
-    config_json=$(python3 << PYTHON_EOF
+    CONFIG_JSON=$($PYTHON_CMD << PYTHON_EOF
 import yaml
 import json
 import sys
@@ -190,40 +247,30 @@ except Exception as e:
 PYTHON_EOF
 )
 
-    # Extract values from config (only if not already set by CLI)
-    if [[ -z "$FEAST_GIT_URL" ]]; then
-        FEAST_GIT_URL=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('git_url',''))" 2>/dev/null || echo "")
-    fi
-    if [[ -z "$FEAST_GIT_REF" ]]; then
-        local source=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('source',''))" 2>/dev/null || echo "")
-        if [[ "$source" == "git" ]]; then
-            FEAST_GIT_REF=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('git_ref',''))" 2>/dev/null || echo "")
-        fi
-    fi
+    # Extract common settings
     if [[ -z "$NAMESPACE" ]]; then
-        NAMESPACE=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('namespace','feast-benchmark'))" 2>/dev/null || echo "feast-benchmark")
+        NAMESPACE=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('namespace','feast-benchmark'))" 2>/dev/null || echo "feast-benchmark")
     fi
     if [[ -z "$FEATURES" ]]; then
-        FEATURES=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('features',200))" 2>/dev/null || echo "200")
+        FEATURES=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('features',200))" 2>/dev/null || echo "200")
     fi
     if [[ -z "$ENTITIES" ]]; then
-        ENTITIES=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(' '.join(map(str,c.get('benchmark',{}).get('entities',[1,10,50,100,200,500]))))" 2>/dev/null || echo "1 10 50 100 200 500")
+        ENTITIES=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(' '.join(map(str,c.get('benchmark',{}).get('entities',[1,10,50,100,200,500]))))" 2>/dev/null || echo "1 10 50 100 200 500")
     fi
     if [[ -z "$ITERATIONS" ]]; then
-        ITERATIONS=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('iterations',300))" 2>/dev/null || echo "300")
+        ITERATIONS=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('iterations',300))" 2>/dev/null || echo "300")
     fi
     if [[ -z "$WARMUP" ]]; then
-        WARMUP=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('warmup',20))" 2>/dev/null || echo "20")
+        WARMUP=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('warmup',20))" 2>/dev/null || echo "20")
     fi
     if [[ -z "$TIMEOUT" ]]; then
-        TIMEOUT=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('job_timeout',1800))" 2>/dev/null || echo "1800")
+        TIMEOUT=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('job_timeout',1800))" 2>/dev/null || echo "1800")
     fi
     if [[ -z "$OUTPUT_DIR" ]]; then
-        OUTPUT_DIR=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('output',{}).get('results_dir','results'))" 2>/dev/null || echo "results")
+        OUTPUT_DIR=$(echo "$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('output',{}).get('results_dir','results'))" 2>/dev/null || echo "results")
     fi
     if [[ -z "$STORES" ]]; then
-        # Build stores list from enabled stores in config
-        STORES=$(echo "$config_json" | python3 -c "
+        STORES=$(echo "$CONFIG_JSON" | python3 -c "
 import sys, json
 c = json.load(sys.stdin)
 stores = c.get('stores', {})
@@ -232,12 +279,39 @@ print(' '.join(enabled))
 " 2>/dev/null || echo "sqlite redis postgres dynamodb")
     fi
     
-    # Store config JSON for later use (store-specific settings)
-    CONFIG_JSON="$config_json"
-    CHARTS_OUTPUT=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('output',{}).get('charts_dir','results/charts'))" 2>/dev/null || echo "results/charts")
-    CHARTS_OUTPUT="${SCRIPT_DIR}/${CHARTS_OUTPUT}"
-    
     log_verbose "Config loaded: NAMESPACE=$NAMESPACE, STORES=$STORES"
+}
+
+# Get list of all references from config
+get_all_refs() {
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+refs = c.get('references', {})
+print(' '.join(refs.keys()))
+" 2>/dev/null || echo ""
+}
+
+# Get default reference name
+get_default_ref() {
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+print(c.get('default_ref', 'default'))
+" 2>/dev/null || echo "default"
+}
+
+# Get reference details (source, git_url, git_ref, version)
+get_ref_config() {
+    local ref_name="$1"
+    local key="$2"
+    
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+ref = c.get('references', {}).get('$ref_name', {})
+print(ref.get('$key', ''))
+" 2>/dev/null || echo ""
 }
 
 # Get store-specific config value
@@ -256,6 +330,42 @@ print(val if val is not None else '$default')
     else
         echo "$default"
     fi
+}
+
+# Get default scenario from config
+get_default_scenario() {
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+print(c.get('default_scenario', 'entity_scaling'))
+" 2>/dev/null || echo "entity_scaling"
+}
+
+# Get scenario config value
+get_scenario_config() {
+    local scenario="$1"
+    local key="$2"
+    
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+scenario = c.get('scenarios', {}).get('$scenario', {})
+val = scenario.get('$key')
+if isinstance(val, list):
+    print(' '.join(map(str, val)))
+else:
+    print(val if val is not None else '')
+" 2>/dev/null || echo ""
+}
+
+# Get list of all scenarios
+get_all_scenarios() {
+    echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+scenarios = c.get('scenarios', {})
+print(' '.join(scenarios.keys()))
+" 2>/dev/null || echo "entity_scaling"
 }
 
 #-------------------------------------------------------------------------------
@@ -342,23 +452,18 @@ setup_local_env() {
 #-------------------------------------------------------------------------------
 # Image Build
 #-------------------------------------------------------------------------------
-build_feast_image() {
-    local git_ref="$1"
-    local git_url="${2:-https://github.com/feast-dev/feast.git}"
-    
-    log_section "Building Feast Image"
-    log_info "Git URL: $git_url"
-    log_info "Git Ref: $git_ref"
-    
+
+# Global array to track async builds: "build_name:image_tag"
+declare -a ASYNC_BUILDS=()
+
+ensure_build_resources() {
     # Check build resources exist
     if [[ ! -f "${BUILD_DIR}/imagestream.yaml" ]] || [[ ! -f "${BUILD_DIR}/buildconfig.yaml" ]]; then
         log_error "Build resources not found in ${BUILD_DIR}"
-        log_info "Creating build resources..."
-        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/imagestream.yaml -n $NAMESPACE"
-        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/buildconfig.yaml -n $NAMESPACE"
+        exit 1
     fi
     
-    # Ensure ImageStream and BuildConfig exist
+    # Ensure ImageStream and BuildConfig exist for feast-benchmark
     if ! $K8S_CLI get imagestream feast-benchmark -n "$NAMESPACE" &>/dev/null; then
         log_info "Creating ImageStream..."
         run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/imagestream.yaml -n $NAMESPACE"
@@ -369,21 +474,302 @@ build_feast_image() {
         run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/buildconfig.yaml -n $NAMESPACE"
     fi
     
-    # Start build with build args
-    log_info "Starting build (this may take 5-10 minutes)..."
+    # Ensure base image resources exist
+    if [[ -f "${BUILD_DIR}/imagestream-base.yaml" ]]; then
+        if ! $K8S_CLI get imagestream feast-benchmark-base -n "$NAMESPACE" &>/dev/null; then
+            log_info "Creating Base ImageStream..."
+            run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/imagestream-base.yaml -n $NAMESPACE"
+        fi
+    fi
     
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo -e "${YELLOW}[DRY-RUN]${NC} Would start build with FEAST_GIT_REF=$git_ref FEAST_GIT_URL=$git_url"
+    if [[ -f "${BUILD_DIR}/buildconfig-base.yaml" ]]; then
+        if ! $K8S_CLI get buildconfig feast-benchmark-base -n "$NAMESPACE" &>/dev/null; then
+            log_info "Creating Base BuildConfig..."
+            run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/buildconfig-base.yaml -n $NAMESPACE"
+        fi
+    fi
+}
+
+# Build base image (one-time, contains all dependencies except feast)
+build_base_image() {
+    log_section "Building Base Image"
+    
+    # Check if base image already exists with valid tag
+    local base_tag
+    base_tag=$($K8S_CLI get istag feast-benchmark-base:latest -n "$NAMESPACE" -o jsonpath='{.tag.name}' 2>/dev/null || echo "")
+    
+    if [[ "$base_tag" == "latest" ]]; then
+        log_info "Base image already exists, skipping build"
         return 0
     fi
     
-    # Create build with env overrides for ARGs
-    $K8S_CLI start-build feast-benchmark -n "$NAMESPACE" \
-        --from-dir="$SCRIPT_DIR" \
-        --build-arg="FEAST_SOURCE=git" \
-        --build-arg="FEAST_GIT_URL=$git_url" \
-        --build-arg="FEAST_GIT_REF=$git_ref" \
-        --follow
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would build base image"
+        return 0
+    fi
+    
+    log_info "Building base image (one-time, ~3-5 minutes)..."
+    log_info "This image contains all dependencies except Feast itself"
+    
+    # Create minimal build directory
+    local build_dir="/tmp/feast_build_base"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    
+    # Copy required files
+    cp "$SCRIPT_DIR"/Dockerfile.base "$build_dir/"
+    cp "$SCRIPT_DIR"/scripts/*.py "$build_dir/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/requirements.txt "$build_dir/" 2>/dev/null || true
+    
+    # Run the build
+    if $K8S_CLI start-build feast-benchmark-base -n "$NAMESPACE" \
+        --from-dir="$build_dir" \
+        --follow; then
+        log_success "Base image built successfully"
+    else
+        log_error "Base image build failed"
+        rm -rf "$build_dir"
+        exit 1
+    fi
+    
+    rm -rf "$build_dir"
+}
+
+# Start a build asynchronously (no --follow)
+start_build_async() {
+    local git_ref="$1"
+    local git_url="${2:-https://github.com/feast-dev/feast.git}"
+    local image_tag="${3:-latest}"
+    
+    log_info "[$image_tag] Starting async build: $git_ref"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would start async build: $image_tag ($git_ref)"
+        ASYNC_BUILDS+=("dry-run-${image_tag}:${image_tag}")
+        return 0
+    fi
+    
+    # OpenShift binary builds don't support --build-arg, so we patch the Dockerfile
+    local dockerfile="${SCRIPT_DIR}/Dockerfile"
+    local dockerfile_backup="${SCRIPT_DIR}/Dockerfile.backup.${image_tag}"
+    
+    # Backup original Dockerfile
+    cp "$dockerfile" "$dockerfile_backup"
+    
+    # Patch ARG defaults in Dockerfile
+    if [[ -n "$BASE_IMAGE" ]]; then
+        sed -i.tmp \
+            -e "s|^ARG BASE_IMAGE=.*|ARG BASE_IMAGE=${BASE_IMAGE}|" \
+            -e "s|^ARG SKIP_DEPS=.*|ARG SKIP_DEPS=\"true\"|" \
+            -e "s|^ARG FEAST_GIT_URL=.*|ARG FEAST_GIT_URL=\"${git_url}\"|" \
+            -e "s|^ARG FEAST_GIT_REF=.*|ARG FEAST_GIT_REF=\"${git_ref}\"|" \
+            "$dockerfile"
+    else
+        sed -i.tmp \
+            -e "s|^ARG FEAST_GIT_URL=.*|ARG FEAST_GIT_URL=\"${git_url}\"|" \
+            -e "s|^ARG FEAST_GIT_REF=.*|ARG FEAST_GIT_REF=\"${git_ref}\"|" \
+            "$dockerfile"
+    fi
+    rm -f "${dockerfile}.tmp"
+    
+    # Create a minimal build directory (avoids uploading .venv, results, etc.)
+    local safe_tag=$(echo "$image_tag" | tr '/' '_')
+    local build_dir="/tmp/feast_build_${safe_tag}"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    
+    # Copy only necessary files
+    cp "$SCRIPT_DIR"/scripts/*.py "$build_dir/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/requirements.txt "$build_dir/" 2>/dev/null || true
+    cp "$dockerfile" "$build_dir/Dockerfile"  # Use patched Dockerfile
+    
+    # Restore original Dockerfile immediately
+    mv "$dockerfile_backup" "$dockerfile"
+    
+    # Start build WITHOUT --follow (async), capture build name
+    local build_output
+    build_output=$($K8S_CLI start-build feast-benchmark -n "$NAMESPACE" \
+        --from-dir="$build_dir" \
+        -o name 2>&1)
+    
+    # Cleanup build directory
+    rm -rf "$build_dir"
+    
+    # Extract build name from output (output includes upload progress + "build.build.openshift.io/feast-benchmark-XX")
+    local build_name
+    build_name=$(echo "$build_output" | grep -o 'feast-benchmark-[0-9]*' | tail -1)
+    
+    if [[ -z "$build_name" ]]; then
+        log_error "Failed to start build for $image_tag: $build_output"
+        return 1
+    fi
+    
+    log_success "[$image_tag] Build started: $build_name"
+    ASYNC_BUILDS+=("${build_name}:${image_tag}")
+}
+
+# Wait for all async builds to complete
+wait_for_all_builds() {
+    if [[ ${#ASYNC_BUILDS[@]} -eq 0 ]]; then
+        log_warn "No builds to wait for"
+        return 0
+    fi
+    
+    log_section "Waiting for ${#ASYNC_BUILDS[@]} Parallel Builds"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would wait for builds: ${ASYNC_BUILDS[*]}"
+        return 0
+    fi
+    
+    local all_complete=false
+    local timeout=900  # 15 minutes max
+    local elapsed=0
+    local interval=15
+    
+    while [[ "$all_complete" != "true" ]] && [[ $elapsed -lt $timeout ]]; do
+        all_complete=true
+        local status_line=""
+        
+        for entry in "${ASYNC_BUILDS[@]}"; do
+            local build_name="${entry%%:*}"
+            local image_tag="${entry##*:}"
+            
+            local phase
+            phase=$($K8S_CLI get build "$build_name" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+            
+            case "$phase" in
+                Complete)
+                    status_line="$status_line [$image_tag:done]"
+                    ;;
+                Failed|Error|Cancelled)
+                    log_error "Build $build_name ($image_tag) failed: $phase"
+                    log_info "Logs: $K8S_CLI logs build/$build_name -n $NAMESPACE"
+                    return 1
+                    ;;
+                *)
+                    status_line="$status_line [$image_tag:$phase]"
+                    all_complete=false
+                    ;;
+            esac
+        done
+        
+        if [[ "$all_complete" != "true" ]]; then
+            echo -ne "\r[${elapsed}s]$status_line          "
+            sleep $interval
+            elapsed=$((elapsed + interval))
+        fi
+    done
+    
+    echo ""  # newline after progress
+    
+    if [[ $elapsed -ge $timeout ]]; then
+        log_error "Build timeout after ${timeout}s"
+        return 1
+    fi
+    
+    # Tag all completed builds
+    for entry in "${ASYNC_BUILDS[@]}"; do
+        local build_name="${entry%%:*}"
+        local image_tag="${entry##*:}"
+        
+        if [[ "$image_tag" != "latest" ]]; then
+            log_info "Tagging image as: $image_tag"
+            $K8S_CLI tag "feast-benchmark:latest" "feast-benchmark:${image_tag}" -n "$NAMESPACE" 2>/dev/null || true
+        fi
+    done
+    
+    log_success "All ${#ASYNC_BUILDS[@]} builds completed"
+}
+
+# Original synchronous build (for single-ref mode)
+build_feast_image() {
+    local git_ref="$1"
+    local git_url="${2:-https://github.com/feast-dev/feast.git}"
+    local image_tag="${3:-latest}"
+    
+    log_section "Building Feast Image: $image_tag"
+    log_info "Git URL: $git_url"
+    log_info "Git Ref: $git_ref"
+    log_info "Tag:     $image_tag"
+    
+    ensure_build_resources
+    
+    # Log build mode
+    if [[ -n "$BASE_IMAGE" ]]; then
+        log_info "Starting feast build (~30 seconds with base image)..."
+    else
+        log_info "Starting full feast build (~3-5 minutes)..."
+    fi
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would start build with FEAST_GIT_REF=$git_ref FEAST_GIT_URL=$git_url TAG=$image_tag"
+        return 0
+    fi
+    
+    # OpenShift binary builds don't support --build-arg, so we patch the Dockerfile
+    local dockerfile="${SCRIPT_DIR}/Dockerfile"
+    local dockerfile_backup="${SCRIPT_DIR}/Dockerfile.backup"
+    
+    # Backup original Dockerfile
+    cp "$dockerfile" "$dockerfile_backup"
+    
+    # Patch ARG defaults in Dockerfile
+    log_info "Patching Dockerfile for: $git_ref"
+    
+    # Check if using base image for fast builds
+    if [[ -n "$BASE_IMAGE" ]]; then
+        log_info "Using base image: $BASE_IMAGE (fast build mode)"
+        sed -i.tmp \
+            -e "s|^ARG BASE_IMAGE=.*|ARG BASE_IMAGE=${BASE_IMAGE}|" \
+            -e "s|^ARG SKIP_DEPS=.*|ARG SKIP_DEPS=\"true\"|" \
+            -e "s|^ARG FEAST_GIT_URL=.*|ARG FEAST_GIT_URL=\"${git_url}\"|" \
+            -e "s|^ARG FEAST_GIT_REF=.*|ARG FEAST_GIT_REF=\"${git_ref}\"|" \
+            "$dockerfile"
+    else
+        log_info "Full build mode (all dependencies)"
+        sed -i.tmp \
+            -e "s|^ARG FEAST_GIT_URL=.*|ARG FEAST_GIT_URL=\"${git_url}\"|" \
+            -e "s|^ARG FEAST_GIT_REF=.*|ARG FEAST_GIT_REF=\"${git_ref}\"|" \
+            "$dockerfile"
+    fi
+    rm -f "${dockerfile}.tmp"
+    
+    # Create a minimal build directory (avoids uploading .venv, results, etc.)
+    local safe_tag=$(echo "$image_tag" | tr '/' '_')
+    local build_dir="/tmp/feast_build_${safe_tag}"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    
+    # Copy only necessary files
+    cp "$SCRIPT_DIR"/scripts/*.py "$build_dir/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/requirements.txt "$build_dir/" 2>/dev/null || true
+    cp "$dockerfile" "$build_dir/Dockerfile"  # Use patched Dockerfile
+    
+    # Restore original Dockerfile immediately
+    mv "$dockerfile_backup" "$dockerfile"
+    
+    # Run the build
+    local build_success=false
+    if $K8S_CLI start-build feast-benchmark -n "$NAMESPACE" \
+        --from-dir="$build_dir" \
+        --follow; then
+        build_success=true
+    fi
+    
+    # Cleanup build directory
+    rm -rf "$build_dir"
+    
+    if [[ "$build_success" != "true" ]]; then
+        log_error "Build failed"
+        exit 1
+    fi
+    
+    # Tag the image for this ref
+    if [[ "$image_tag" != "latest" ]]; then
+        log_info "Tagging image as: $image_tag"
+        $K8S_CLI tag "feast-benchmark:latest" "feast-benchmark:${image_tag}" -n "$NAMESPACE" 2>/dev/null || true
+    fi
     
     # Verify build succeeded
     local latest_build
@@ -412,6 +798,7 @@ delete_existing_jobs() {
 
 create_job() {
     local store="$1"
+    local image_tag="${2:-latest}"
     local job_file="${JOBS_DIR}/${store}-job.yaml"
     
     if [[ ! -f "$job_file" ]]; then
@@ -419,8 +806,16 @@ create_job() {
         return 1
     fi
     
-    log_info "Creating job for $store..."
-    run_cmd "$K8S_CLI create -f $job_file -n $NAMESPACE"
+    log_info "Creating job for $store (image tag: $image_tag)..."
+    
+    # If using non-latest tag, patch the job with the correct image tag
+    if [[ "$image_tag" != "latest" ]]; then
+        # Create job with patched image tag
+        local image_url="image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/feast-benchmark:${image_tag}"
+        run_cmd "cat $job_file | sed 's|feast-benchmark:latest|feast-benchmark:${image_tag}|g' | $K8S_CLI create -f - -n $NAMESPACE"
+    else
+        run_cmd "$K8S_CLI create -f $job_file -n $NAMESPACE"
+    fi
 }
 
 wait_for_job() {
@@ -452,23 +847,31 @@ create_results_reader() {
 
 fetch_results() {
     local store="$1"
-    local output_file="${SCRIPT_DIR}/${OUTPUT_DIR}/${store}/benchmark_results.json"
+    local output_base="${2:-${SCRIPT_DIR}/${OUTPUT_DIR}}"
     
     log_info "Fetching results for $store..."
-    mkdir -p "$(dirname "$output_file")"
     
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo -e "${YELLOW}[DRY-RUN]${NC} Would fetch /results/${store}/benchmark_results.json to $output_file"
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would fetch /results/${store}/ to $output_base/${store}/"
         return 0
     fi
     
-    $K8S_CLI exec results-reader -n "$NAMESPACE" -- cat "/results/${store}/benchmark_results.json" > "$output_file" 2>/dev/null
-    
-    if [[ -s "$output_file" ]]; then
-        log_success "Saved: $output_file"
-    else
-        log_warn "No results found for $store"
-    fi
+    # Fetch results for each scenario (entity_scaling and feature_scaling)
+    for scenario in entity_scaling feature_scaling; do
+        local output_dir="${output_base}/${store}/${scenario}"
+        local output_file="${output_dir}/benchmark_results.json"
+        mkdir -p "$output_dir"
+        
+        # Check if results exist for this scenario
+        if $K8S_CLI exec results-reader -n "$NAMESPACE" -- test -f "/results/${store}/${scenario}/benchmark_results.json" 2>/dev/null; then
+            $K8S_CLI exec results-reader -n "$NAMESPACE" -- cat "/results/${store}/${scenario}/benchmark_results.json" > "$output_file" 2>/dev/null
+            if [[ -s "$output_file" ]]; then
+                log_success "Saved: $output_file"
+            fi
+        else
+            log_verbose "No ${scenario} results found for $store"
+        fi
+    done
 }
 
 cleanup_results_reader() {
@@ -481,39 +884,76 @@ cleanup_results_reader() {
 #-------------------------------------------------------------------------------
 run_local_benchmark() {
     local store="$1"
-    
-    log_info "Running local benchmark for $store..."
-    
-    local entities_arg=$(echo "$ENTITIES" | tr ' ' ' ')
-    local output_path="${SCRIPT_DIR}/${OUTPUT_DIR}/${store}"
+    local scenario="${2:-entity_scaling}"
+    local ref_name="${3:-${CURRENT_REF:-default}}"
     
     # Get store-specific iterations/warmup from config (with defaults)
     local store_iterations=$(get_store_config "$store" "iterations" "$ITERATIONS")
     local store_warmup=$(get_store_config "$store" "warmup" "$WARMUP")
     
+    # Handle "all" scenario - run both
+    if [[ "$scenario" == "all" ]]; then
+        log_info "Running both scenarios for $store..."
+        run_local_benchmark "$store" "entity_scaling" "$ref_name"
+        run_local_benchmark "$store" "feature_scaling" "$ref_name"
+        return
+    fi
+    
+    log_info "Running local benchmark for $store (scenario: $scenario)..."
     log_info "Store $store: $store_iterations iterations, $store_warmup warmup"
     
-    run_cmd "./.venv/bin/python unified_benchmark.py \
-        --store $store \
-        --features $FEATURES \
-        --entities $entities_arg \
-        --iterations $store_iterations \
-        --warmup $store_warmup \
-        --profile \
-        --output $output_path"
+    # Output path: results/{ref}/{store}_{scenario}/
+    local output_path="${SCRIPT_DIR}/${OUTPUT_DIR}/${ref_name}/${store}_${scenario}"
+    
+    if [[ "$scenario" == "feature_scaling" ]]; then
+        # Feature scaling: fixed entities, vary features
+        local fixed_entities=$(get_scenario_config "feature_scaling" "entities")
+        local feature_counts=$(get_scenario_config "feature_scaling" "features")
+        
+        fixed_entities="${fixed_entities:-50}"
+        feature_counts="${feature_counts:-5 25 50 100 150 200}"
+        
+        log_info "Feature scaling: $fixed_entities entities, features: $feature_counts"
+        
+        run_cmd "./.venv/bin/python scripts/unified_benchmark.py \
+            --store $store \
+            --entities $fixed_entities \
+            --features $feature_counts \
+            --iterations $store_iterations \
+            --warmup $store_warmup \
+            --profile \
+            --scenario feature_scaling \
+            --output $output_path"
+    else
+        # Entity scaling (default): fixed features, vary entities
+        local entities_arg=$(echo "$ENTITIES" | tr ' ' ' ')
+        
+        run_cmd "./.venv/bin/python scripts/unified_benchmark.py \
+            --store $store \
+            --features $FEATURES \
+            --entities $entities_arg \
+            --iterations $store_iterations \
+            --warmup $store_warmup \
+            --profile \
+            --scenario entity_scaling \
+            --output $output_path"
+    fi
 }
 
 #-------------------------------------------------------------------------------
 # Chart Generation
 #-------------------------------------------------------------------------------
 generate_charts() {
+    local output_base="${1:-${SCRIPT_DIR}/${OUTPUT_DIR}}"
+    local charts_dir="${output_base}/charts"
+    
     log_section "Generating Charts"
     
     local dirs=""
     local names=""
     
     for store in $STORES; do
-        local result_dir="${SCRIPT_DIR}/${OUTPUT_DIR}/${store}"
+        local result_dir="${output_base}/${store}"
         if [[ -f "${result_dir}/benchmark_results.json" ]]; then
             dirs="$dirs $result_dir"
             names="$names $store"
@@ -527,14 +967,14 @@ generate_charts() {
         return 1
     fi
     
-    mkdir -p "$CHARTS_OUTPUT"
+    mkdir -p "$charts_dir"
     
-    run_cmd "./.venv/bin/python generate_charts.py \
+    run_cmd "./.venv/bin/python scripts/generate_charts.py \
         --dirs $dirs \
         --names $names \
-        --output $CHARTS_OUTPUT"
+        --output $charts_dir"
     
-    log_success "Charts saved to: $CHARTS_OUTPUT"
+    log_success "Charts saved to: $charts_dir"
 }
 
 #-------------------------------------------------------------------------------
@@ -590,46 +1030,39 @@ else:
     
     echo "└──────────┴──────────┴────────┘"
     echo ""
-    echo "Charts:  $CHARTS_OUTPUT"
+    if [[ -n "$CHARTS_OUTPUT" ]]; then
+        echo "Charts:  $CHARTS_OUTPUT"
+    fi
     echo "Results: ${SCRIPT_DIR}/${OUTPUT_DIR}/"
 }
 
 #-------------------------------------------------------------------------------
-# Main Execution
+# Run benchmark for a single reference
 #-------------------------------------------------------------------------------
-main() {
-    parse_args "$@"
+run_single_ref() {
+    local ref_name="$1"
+    local ref_source="$2"
+    local ref_git_url="$3"
+    local ref_git_ref="$4"
     
-    # Load config file (defaults to benchmark.config.yaml)
-    if [[ -z "$CONFIG_FILE" ]]; then
-        CONFIG_FILE="${SCRIPT_DIR}/benchmark.config.yaml"
-    fi
-    load_config "$CONFIG_FILE"
+    CURRENT_REF="$ref_name"
+    CURRENT_REF_OUTPUT="${SCRIPT_DIR}/${OUTPUT_DIR}/${ref_name}"
+    CHARTS_OUTPUT="${CURRENT_REF_OUTPUT}/charts"
     
-    # Set CHARTS_OUTPUT if not set by config
-    CHARTS_OUTPUT="${CHARTS_OUTPUT:-${SCRIPT_DIR}/results/charts}"
-    
-    log_header "Feast Online Store Benchmark"
+    log_header "Benchmarking: $ref_name"
     echo ""
-    echo "  Config:     $CONFIG_FILE"
-    if [[ -n "$FEAST_GIT_REF" ]]; then
-        echo "  Feast:      ${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}@$FEAST_GIT_REF"
+    echo "  Source:     $ref_source"
+    if [[ "$ref_source" == "git" ]]; then
+        echo "  Git URL:    $ref_git_url"
+        echo "  Git Ref:    $ref_git_ref"
     fi
-    echo "  Stores:     $STORES"
-    echo "  Features:   $FEATURES"
-    echo "  Entities:   $ENTITIES"
-    echo "  Iterations: $ITERATIONS"
-    echo "  Warmup:     $WARMUP"
-    echo "  Namespace:  $NAMESPACE"
-    echo "  Dry Run:    $DRY_RUN"
+    echo "  Output:     $CURRENT_REF_OUTPUT"
     echo ""
     
-    check_prerequisites
-    setup_local_env
-    
-    # Build image if git ref specified and not skipping build
-    if [[ -n "$FEAST_GIT_REF" ]] && [[ "$SKIP_BUILD" != "true" ]]; then
-        build_feast_image "$FEAST_GIT_REF" "${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}"
+    # Build image for this ref (with unique tag)
+    local image_tag="${ref_name}"
+    if [[ "$ref_source" == "git" ]] && [[ "$SKIP_BUILD" != "true" ]]; then
+        build_feast_image "$ref_git_ref" "$ref_git_url" "$image_tag"
     fi
     
     # Track which stores to fetch from K8s
@@ -637,7 +1070,7 @@ main() {
     
     # Run benchmarks for each store
     for store in $STORES; do
-        log_section "Benchmarking: $store"
+        log_section "[$ref_name] Benchmarking: $store"
         
         if [[ "$SKIP_K8S" == "true" && "$store" != "sqlite" ]]; then
             log_warn "Skipping $store (--skip-k8s enabled)"
@@ -650,13 +1083,13 @@ main() {
                     run_local_benchmark "$store"
                 else
                     delete_existing_jobs "$store"
-                    create_job "$store"
+                    create_job "$store" "$image_tag"
                     k8s_stores="$k8s_stores $store"
                 fi
                 ;;
             redis|postgres|dynamodb)
                 delete_existing_jobs "$store"
-                create_job "$store"
+                create_job "$store" "$image_tag"
                 k8s_stores="$k8s_stores $store"
                 ;;
             *)
@@ -667,29 +1100,349 @@ main() {
     
     # Wait for all K8s jobs
     if [[ -n "$k8s_stores" ]]; then
-        log_section "Waiting for K8s Jobs"
+        log_section "[$ref_name] Waiting for K8s Jobs"
         for store in $k8s_stores; do
             wait_for_job "$store" || log_warn "Job $store may have failed"
         done
         
-        # Fetch results
-        log_section "Collecting Results"
+        # Fetch results to ref-specific directory
+        log_section "[$ref_name] Collecting Results"
         create_results_reader
         for store in $k8s_stores; do
-            fetch_results "$store"
+            fetch_results "$store" "$CURRENT_REF_OUTPUT"
         done
         cleanup_results_reader
     fi
     
-    # Generate charts
+    # Generate charts for this ref
     if [[ "$SKIP_CHARTS" != "true" ]]; then
-        generate_charts
+        generate_charts "$CURRENT_REF_OUTPUT"
     fi
     
-    # Print summary
-    print_summary
+    log_success "[$ref_name] Complete"
+}
+
+#-------------------------------------------------------------------------------
+# Generate comparison charts across multiple refs
+#-------------------------------------------------------------------------------
+generate_comparison_charts() {
+    local refs="$1"
     
-    log_header "Benchmark Complete"
+    log_section "Generating Comparison Charts"
+    
+    local comparison_dir="${SCRIPT_DIR}/${OUTPUT_DIR}/comparison/charts"
+    mkdir -p "$comparison_dir"
+    
+    # Build list of result directories
+    local dirs=""
+    local names=""
+    for ref in $refs; do
+        local ref_dir="${SCRIPT_DIR}/${OUTPUT_DIR}/${ref}"
+        if [[ -d "$ref_dir" ]]; then
+            dirs="$dirs $ref_dir"
+            names="$names $ref"
+        fi
+    done
+    
+    if [[ -z "$dirs" ]]; then
+        log_warn "No results found for comparison"
+        return 1
+    fi
+    
+    run_cmd "./.venv/bin/python scripts/generate_charts.py \
+        --dirs $dirs \
+        --names $names \
+        --output $comparison_dir"
+    
+    log_success "Comparison charts saved to: $comparison_dir"
+}
+
+#-------------------------------------------------------------------------------
+# Stage: Build - Create Docker images for each ref
+#-------------------------------------------------------------------------------
+run_stage_build() {
+    local refs="$1"
+    
+    log_header "Stage: BUILD"
+    
+    ensure_build_resources
+    
+    # Log build mode
+    if [[ -n "$BASE_IMAGE" ]]; then
+        log_info "Fast build mode: using base image $BASE_IMAGE"
+    else
+        log_info "Full build mode: building all dependencies from scratch"
+    fi
+    
+    log_section "Starting Parallel Builds"
+    ASYNC_BUILDS=()  # Reset
+    
+    for ref in $refs; do
+        local ref_source=$(get_ref_config "$ref" "source")
+        local ref_git_url=$(get_ref_config "$ref" "git_url")
+        local ref_git_ref=$(get_ref_config "$ref" "git_ref")
+        
+        if [[ -z "$ref_source" ]]; then
+            log_warn "Reference '$ref' not found in config, skipping"
+            continue
+        fi
+        
+        if [[ "$ref_source" == "git" ]]; then
+            start_build_async "$ref_git_ref" "$ref_git_url" "$ref"
+            sleep 2  # Small delay to avoid race conditions on Dockerfile
+        fi
+    done
+    
+    # Wait for all builds to complete and tag them
+    wait_for_all_builds || { log_error "Build phase failed"; exit 1; }
+    
+    # Tag images from build digests
+    log_section "Tagging Images"
+    for ref in $refs; do
+        local latest_build
+        latest_build=$($K8S_CLI get builds -n "$NAMESPACE" -l buildconfig=feast-benchmark \
+            --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+        
+        if [[ -n "$latest_build" ]]; then
+            local digest
+            digest=$($K8S_CLI get build "$latest_build" -n "$NAMESPACE" \
+                -o jsonpath='{.status.output.to.imageDigest}' 2>/dev/null)
+            if [[ -n "$digest" ]]; then
+                log_info "Tagging feast-benchmark:$ref"
+                $K8S_CLI tag "feast-benchmark@$digest" "feast-benchmark:$ref" -n "$NAMESPACE" 2>/dev/null || true
+            fi
+        fi
+    done
+    
+    log_success "Build stage complete"
+}
+
+#-------------------------------------------------------------------------------
+# Stage: Benchmark - Run K8s jobs and collect results
+#-------------------------------------------------------------------------------
+run_stage_benchmark() {
+    local refs="$1"
+    
+    log_header "Stage: BENCHMARK"
+    
+    for ref in $refs; do
+        local ref_source=$(get_ref_config "$ref" "source")
+        local ref_git_url=$(get_ref_config "$ref" "git_url")
+        local ref_git_ref=$(get_ref_config "$ref" "git_ref")
+        
+        if [[ -z "$ref_source" ]]; then
+            log_warn "Reference '$ref' not found in config, skipping"
+            continue
+        fi
+        
+        # Run benchmark for this ref (skip build, skip charts - charts are separate stage)
+        SKIP_BUILD=true
+        SKIP_CHARTS=true
+        run_single_ref "$ref" "$ref_source" "$ref_git_url" "$ref_git_ref"
+    done
+    
+    log_success "Benchmark stage complete"
+}
+
+#-------------------------------------------------------------------------------
+# Stage: Charts - Generate charts from results
+#-------------------------------------------------------------------------------
+run_stage_charts() {
+    local refs="$1"
+    
+    log_header "Stage: CHARTS"
+    
+    # Generate per-ref charts
+    for ref in $refs; do
+        local ref_dir="${SCRIPT_DIR}/${OUTPUT_DIR}/${ref}"
+        local charts_dir="${ref_dir}/charts"
+        
+        if [[ ! -d "$ref_dir" ]]; then
+            log_warn "No results directory for $ref, skipping"
+            continue
+        fi
+        
+        log_section "Generating Charts: $ref"
+        mkdir -p "$charts_dir"
+        
+        # Build dirs and names for stores
+        local store_dirs=""
+        local store_names=""
+        for store in $STORES; do
+            local store_dir="${ref_dir}/${store}"
+            if [[ -d "$store_dir" ]] && [[ -f "${store_dir}/benchmark_results.json" ]]; then
+                store_dirs="$store_dirs $store_dir"
+                store_names="$store_names $store"
+            fi
+        done
+        
+        if [[ -n "$store_dirs" ]]; then
+            run_cmd "./.venv/bin/python scripts/generate_charts.py \
+                --dirs $store_dirs \
+                --names $store_names \
+                --output $charts_dir"
+            log_success "Charts saved to: $charts_dir"
+        else
+            log_warn "No results found for $ref"
+        fi
+    done
+    
+    # Generate comparison charts if multiple refs
+    local ref_count=$(echo "$refs" | wc -w | tr -d ' ')
+    if [[ "$ref_count" -gt 1 ]]; then
+        generate_comparison_charts "$refs"
+    fi
+    
+    log_success "Charts stage complete"
+}
+
+#-------------------------------------------------------------------------------
+# Main Execution
+#-------------------------------------------------------------------------------
+main() {
+    parse_args "$@"
+    
+    # Validate stage
+    case "$STAGE" in
+        all|build|benchmark|charts) ;;
+        *) log_error "Invalid stage: $STAGE (must be: all, build, benchmark, charts)"; exit 1 ;;
+    esac
+    
+    # Validate scenario
+    if [[ -n "$SCENARIO" ]]; then
+        case "$SCENARIO" in
+            entity_scaling|feature_scaling|all) ;;
+            *) log_error "Invalid scenario: $SCENARIO (must be: entity_scaling, feature_scaling, all)"; exit 1 ;;
+        esac
+    fi
+    
+    # Load config file (defaults to benchmark.config.yaml)
+    if [[ -z "$CONFIG_FILE" ]]; then
+        CONFIG_FILE="${SCRIPT_DIR}/benchmark.config.yaml"
+    fi
+    load_config "$CONFIG_FILE"
+    
+    # Determine scenario to run
+    if [[ -z "$SCENARIO" ]]; then
+        SCENARIO=$(get_default_scenario)
+    fi
+    
+    log_header "Feast Online Store Benchmark"
+    echo ""
+    echo "  Config:     $CONFIG_FILE"
+    echo "  Stage:      $STAGE"
+    echo "  Scenario:   $SCENARIO"
+    echo "  Mode:       $(if [[ "$COMPARE_MODE" == "true" ]]; then echo "Compare"; else echo "Single"; fi)"
+    echo "  Stores:     $STORES"
+    echo "  Features:   $FEATURES"
+    echo "  Entities:   $ENTITIES"
+    echo "  Iterations: $ITERATIONS"
+    echo "  Namespace:  $NAMESPACE"
+    echo "  Dry Run:    $DRY_RUN"
+    echo ""
+    
+    # Charts stage doesn't need K8s prerequisites
+    if [[ "$STAGE" != "charts" ]]; then
+        check_prerequisites
+    fi
+    setup_local_env
+    
+    # Determine which refs to run
+    local refs_to_benchmark=""
+    
+    if [[ "$COMPARE_MODE" == "true" ]] || [[ -n "$REFS_TO_RUN" ]]; then
+        # Multi-ref mode
+        if [[ -n "$REFS_TO_RUN" ]]; then
+            refs_to_benchmark=$(echo "$REFS_TO_RUN" | tr ',' ' ')
+        else
+            refs_to_benchmark=$(get_all_refs)
+        fi
+        
+        if [[ -z "$refs_to_benchmark" ]]; then
+            log_error "No references found in config. Add references section to benchmark.config.yaml"
+            exit 1
+        fi
+        
+        echo "  References: $refs_to_benchmark"
+        echo ""
+        
+        # Run requested stage(s)
+        case "$STAGE" in
+            all)
+                run_stage_build "$refs_to_benchmark"
+                run_stage_benchmark "$refs_to_benchmark"
+                run_stage_charts "$refs_to_benchmark"
+                ;;
+            build)
+                run_stage_build "$refs_to_benchmark"
+                ;;
+            benchmark)
+                run_stage_benchmark "$refs_to_benchmark"
+                ;;
+            charts)
+                run_stage_charts "$refs_to_benchmark"
+                ;;
+        esac
+        
+    else
+        # Single-ref mode (original behavior)
+        local ref_name=""
+        local ref_source=""
+        local ref_git_url=""
+        local ref_git_ref=""
+        
+        if [[ -n "$FEAST_GIT_REF" ]]; then
+            ref_name="custom"
+            ref_source="git"
+            ref_git_url="${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}"
+            ref_git_ref="$FEAST_GIT_REF"
+        else
+            ref_name=$(get_default_ref)
+            ref_source=$(get_ref_config "$ref_name" "source")
+            ref_git_url=$(get_ref_config "$ref_name" "git_url")
+            ref_git_ref=$(get_ref_config "$ref_name" "git_ref")
+            
+            if [[ -z "$ref_source" ]]; then
+                ref_name="default"
+                ref_source="pypi"
+            fi
+        fi
+        
+        refs_to_benchmark="$ref_name"
+        
+        case "$STAGE" in
+            all)
+                run_single_ref "$ref_name" "$ref_source" "$ref_git_url" "$ref_git_ref"
+                ;;
+            build)
+                if [[ "$ref_source" == "git" ]]; then
+                    build_feast_image "$ref_git_ref" "$ref_git_url" "$ref_name"
+                else
+                    log_warn "Build stage skipped (source is not git)"
+                fi
+                ;;
+            benchmark)
+                SKIP_BUILD=true
+                SKIP_CHARTS=true
+                run_single_ref "$ref_name" "$ref_source" "$ref_git_url" "$ref_git_ref"
+                ;;
+            charts)
+                run_stage_charts "$ref_name"
+                ;;
+        esac
+    fi
+    
+    # Print summary (skip for build-only stage)
+    if [[ "$STAGE" != "build" ]]; then
+        print_summary
+    fi
+    
+    log_header "Complete: $STAGE"
+    echo ""
+    echo "Results: ${SCRIPT_DIR}/${OUTPUT_DIR}/"
+    if [[ "$COMPARE_MODE" == "true" ]] || [[ -n "$REFS_TO_RUN" ]]; then
+        echo "Comparison: ${SCRIPT_DIR}/${OUTPUT_DIR}/comparison/charts/"
+    fi
 }
 
 # Run main

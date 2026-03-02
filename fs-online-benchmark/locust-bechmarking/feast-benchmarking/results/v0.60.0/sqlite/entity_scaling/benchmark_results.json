@@ -1,0 +1,140 @@
+{
+  "store": "sqlite",
+  "scenario": "entity_scaling",
+  "timestamp": "2026-03-02T13:44:31.760860",
+  "config": {
+    "fixed_features": 200,
+    "entity_counts": [
+      1,
+      10,
+      50,
+      100,
+      200,
+      500
+    ],
+    "iterations": 300,
+    "warmup": 20,
+    "sla_ms": 60.0,
+    "optimizations": [
+      "cache_ttl=0",
+      "entity_key_v3",
+      "iter=300"
+    ]
+  },
+  "latency": [
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 1,
+      "p50": 14.28546104580164,
+      "p95": 16.027507022954524,
+      "p99": 23.562775924801826,
+      "mean": 14.609579262711728,
+      "min_val": 13.829777017235756,
+      "max_val": 24.1113769588992,
+      "std_dev": 1.2935865833722715,
+      "sla_pass": true,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 10,
+      "p50": 27.22287201322615,
+      "p95": 30.220526037737727,
+      "p99": 75.7879230659455,
+      "mean": 28.471168861336384,
+      "min_val": 25.800841976888478,
+      "max_val": 84.26750905346125,
+      "std_dev": 6.115578870327985,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 50,
+      "p50": 90.30455001629889,
+      "p95": 146.52270590886474,
+      "p99": 156.8022620631382,
+      "mean": 106.76613190909848,
+      "min_val": 85.82085592206568,
+      "max_val": 172.41391097195446,
+      "std_dev": 24.86095762137671,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 100,
+      "p50": 222.74545498657972,
+      "p95": 234.2925330158323,
+      "p99": 257.9315589973703,
+      "mean": 206.77979127465127,
+      "min_val": 166.07858799397945,
+      "max_val": 260.29878098051995,
+      "std_dev": 26.839457596418253,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 396.6163229197264,
+      "p95": 455.0653969636187,
+      "p99": 463.0141530651599,
+      "mean": 407.95131358473253,
+      "min_val": 379.65864199213684,
+      "max_val": 471.66662593372166,
+      "std_dev": 24.105522636731347,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 500,
+      "p50": 981.4120730152354,
+      "p95": 1048.1893749674782,
+      "p99": 1063.2263370789587,
+      "mean": 990.4622992093209,
+      "min_val": 935.0864660227671,
+      "max_val": 1091.142320074141,
+      "std_dev": 30.971108242154724,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    }
+  ]
+}

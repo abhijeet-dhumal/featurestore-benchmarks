@@ -1,0 +1,177 @@
+{
+  "store": "redis",
+  "scenario": "entity_scaling",
+  "timestamp": "2026-03-02T13:26:18.019120",
+  "feast_version": "0.0.0",
+  "config": {
+    "fixed_features": 200,
+    "entity_counts": [
+      1,
+      10,
+      50,
+      100,
+      200,
+      500
+    ],
+    "iterations": 300,
+    "warmup": 20,
+    "sla_ms": 60.0,
+    "optimizations": [
+      "cache_ttl=0",
+      "entity_key_v3",
+      "iter=300"
+    ]
+  },
+  "latency": [
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 1,
+      "p50": 4.053386044688523,
+      "p95": 4.705135943368077,
+      "p99": 7.40869203582406,
+      "mean": 4.186201237219696,
+      "min_val": 3.8769840029999614,
+      "max_val": 7.536652032285929,
+      "std_dev": 0.5179949798919712,
+      "rps": 238.8800593504576,
+      "online_read_pct": 0.1587786104795767,
+      "protobuf_convert_pct": 10.773824867305436,
+      "entity_serial_pct": 0.13811672520113497,
+      "other_pct": 88.92927979701385,
+      "sla_pass": true,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 10,
+      "p50": 14.998167054727674,
+      "p95": 17.292367992922664,
+      "p99": 73.58057703822851,
+      "mean": 16.563150762813166,
+      "min_val": 13.801325927488506,
+      "max_val": 73.99145408999175,
+      "std_dev": 8.064634952858567,
+      "rps": 60.37498627647311,
+      "online_read_pct": 0.09008024882489213,
+      "protobuf_convert_pct": 19.24742725967162,
+      "entity_serial_pct": 0.27136983362548056,
+      "other_pct": 80.391122657878,
+      "sla_pass": false,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 50,
+      "p50": 68.51405603811145,
+      "p95": 130.34006289672107,
+      "p99": 136.71248697210103,
+      "mean": 81.9885083695408,
+      "min_val": 64.18352795299143,
+      "max_val": 138.28815496526659,
+      "std_dev": 24.355968000954498,
+      "rps": 12.19683123752872,
+      "online_read_pct": 0.05774179150476113,
+      "protobuf_convert_pct": 21.799793623337226,
+      "entity_serial_pct": 0.27644272381062174,
+      "other_pct": 77.86602186134739,
+      "sla_pass": false,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 100,
+      "p50": 139.31703893467784,
+      "p95": 198.58781096991152,
+      "p99": 210.7125350739807,
+      "mean": 159.62714306583317,
+      "min_val": 128.59533808659762,
+      "max_val": 226.26911709085107,
+      "std_dev": 29.607997068464364,
+      "rps": 6.264598744259813,
+      "online_read_pct": 0.058900364647535855,
+      "protobuf_convert_pct": 21.42130913323279,
+      "entity_serial_pct": 0.2713264339881034,
+      "other_pct": 78.24846406813157,
+      "sla_pass": false,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 328.52802297566086,
+      "p95": 379.2996190022677,
+      "p99": 391.07016404159367,
+      "mean": 326.6254584956914,
+      "min_val": 261.3685029791668,
+      "max_val": 413.4569519665092,
+      "std_dev": 26.935855834047448,
+      "rps": 3.061610704216405,
+      "online_read_pct": 0.0519331114171936,
+      "protobuf_convert_pct": 21.87902704124713,
+      "entity_serial_pct": 0.27012715346449306,
+      "other_pct": 77.79891269387119,
+      "sla_pass": false,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    },
+    {
+      "store": "redis",
+      "scenario": "entity_scaling",
+      "num_features": 200,
+      "num_entities": 500,
+      "p50": 900.2933279844001,
+      "p95": 988.440259010531,
+      "p99": 1015.1298599084839,
+      "mean": 911.2062434258405,
+      "min_val": 840.3161379974335,
+      "max_val": 1031.092907069251,
+      "std_dev": 39.319517778513436,
+      "rps": 1.0974463873736462,
+      "online_read_pct": 0.03646051897341603,
+      "protobuf_convert_pct": 21.172726393013566,
+      "entity_serial_pct": 0.24332937097311333,
+      "other_pct": 78.54748371703991,
+      "sla_pass": false,
+      "feast_version": "0.0.0",
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=300"
+      ]
+    }
+  ]
+}

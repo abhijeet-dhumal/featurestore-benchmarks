@@ -5,11 +5,24 @@ metadata:
   labels:
     app.kubernetes.io/name: feast-benchmark
 data:
-  # Test dimensions - from TRACKER.md
-  # Features: 10, 50, 100, 200 (prod: 200)
+  # ===========================================
+  # BENCHMARK SCENARIOS
+  # ===========================================
+  # Scenarios to run: entity_scaling, feature_scaling, or both
+  SCENARIOS: "entity_scaling,feature_scaling"
+  
+  # Entity Scaling: Fixed features, vary entities
+  FIXED_FEATURES: "200"
+  ENTITY_COUNTS: "1,10,50,100,200,500"
+  
+  # Feature Scaling: Fixed entities, vary features  
+  FIXED_ENTITIES: "50"
+  FEATURE_COUNTS: "5,25,50,100,150,200"
+  
+  # Legacy vars (kept for backward compatibility)
   FEATURES: "200"
-  # Entities: 1, 10, 50, 100, 200, 500 (State Farm: 50, 200)
   ENTITIES: "1,10,50,100,500"
+  
   # Feature Views: 1, 10, 50, 100+
   FV_COUNTS: "1,10,50,100"
   # Feature Services: 1, 5, 10
@@ -20,9 +33,9 @@ data:
   COMPRESSION: "none"
   
   # OPTIMIZATION: Increased iterations for statistical significance
-  ITERATIONS: "100"
+  ITERATIONS: "300"
   # OPTIMIZATION: More warmup for steady-state measurement
-  WARMUP: "10"
+  WARMUP: "20"
   
   # SLA targets (State Farm)
   SLA_P99_MS: "60"

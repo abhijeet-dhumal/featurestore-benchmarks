@@ -1,0 +1,125 @@
+{
+  "store": "sqlite",
+  "timestamp": "2026-03-02T13:03:39.448236",
+  "config": {
+    "features": 200,
+    "iterations": 100,
+    "warmup": 10,
+    "sla_ms": 60.0,
+    "optimizations": [
+      "cache_ttl=0",
+      "entity_key_v3",
+      "iter=100"
+    ]
+  },
+  "latency": [
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 1,
+      "p50": 3.394042025320232,
+      "p95": 3.713797079399228,
+      "p99": 53.03806206211448,
+      "mean": 3.914829745190218,
+      "min_val": 3.3012949861586094,
+      "max_val": 53.03806206211448,
+      "std_dev": 4.963476715581659,
+      "sla_pass": true,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 10,
+      "p50": 11.093557928688824,
+      "p95": 13.811109005473554,
+      "p99": 59.55227499362081,
+      "mean": 11.74098331364803,
+      "min_val": 10.732408030889928,
+      "max_val": 59.55227499362081,
+      "std_dev": 4.8744490773493,
+      "sla_pass": true,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 50,
+      "p50": 48.47200808580965,
+      "p95": 100.85160390008241,
+      "p99": 112.91596200317144,
+      "mean": 56.73475436400622,
+      "min_val": 45.39250209927559,
+      "max_val": 112.91596200317144,
+      "std_dev": 18.738428587541836,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 100,
+      "p50": 104.64721906464547,
+      "p95": 159.70096306409687,
+      "p99": 181.89457396510988,
+      "mean": 121.92409309907816,
+      "min_val": 96.43577004317194,
+      "max_val": 181.89457396510988,
+      "std_dev": 25.458785736289904,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 200,
+      "p50": 261.33116998244077,
+      "p95": 284.24280195031315,
+      "p99": 292.7877890178934,
+      "mean": 251.47090314887464,
+      "min_val": 201.5720249619335,
+      "max_val": 292.7877890178934,
+      "std_dev": 26.869749994323428,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    },
+    {
+      "store": "sqlite",
+      "num_features": 200,
+      "num_entities": 500,
+      "p50": 649.3318829452619,
+      "p95": 668.9986219862476,
+      "p99": 679.5730449957773,
+      "mean": 648.2477439148352,
+      "min_val": 581.9191799964756,
+      "max_val": 679.5730449957773,
+      "std_dev": 14.070386613154458,
+      "sla_pass": false,
+      "optimizations": [
+        "cache_ttl=0",
+        "entity_key_v3",
+        "iter=100"
+      ]
+    }
+  ]
+}

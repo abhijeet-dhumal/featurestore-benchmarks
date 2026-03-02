@@ -39,8 +39,8 @@ spec:
               export PYTHONUNBUFFERED=1
               
               python3 << 'PYTHON_EOF'
-              """Optimized SQLite Benchmark (local dev baseline)"""
-              import json, os, statistics, time
+              """SQLite Benchmark - Dual Scenario (entity_scaling + feature_scaling)"""
+              import json, os, statistics, time, shutil
               from datetime import datetime, timedelta
               from dataclasses import dataclass, asdict, field
               from typing import List
@@ -48,9 +48,12 @@ spec:
               from feast import Entity, FeatureStore, FeatureView, Field, FileSource
               from feast.types import Float64
               
+              STORE = "sqlite"
+              
               @dataclass
               class Result:
                   store: str
+                  scenario: str
                   num_features: int
                   num_entities: int
                   p50: float
@@ -63,9 +66,8 @@ spec:
                   sla_pass: bool
                   optimizations: List[str] = field(default_factory=list)
               
-              def run():
-                  import shutil
-                  repo = "/tmp/feast_repo"
+              def setup_feast(repo, num_features, max_entities):
+                  """Setup Feast repo with given dimensions"""
                   shutil.rmtree(repo, ignore_errors=True)
                   os.makedirs(repo, exist_ok=True)
                   
@@ -82,15 +84,8 @@ spec:
                   with open(f"{repo}/feature_store.yaml", "w") as f:
                       f.write(config)
                   
-                  NUM_FEATURES = int(os.environ.get("FEATURES", "200"))
-                  ENTITIES = [int(x) for x in os.environ.get("ENTITIES", "1,10,50,100,500").split(",")]
-                  ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
-                  WARMUP = int(os.environ.get("WARMUP", "10"))
-                  SLA = float(os.environ.get("SLA_P99_MS", "60"))
-                  
-                  max_entities = max(ENTITIES) + 100
                   data = {"user_id": [f"user_{i}" for i in range(max_entities)]}
-                  for i in range(NUM_FEATURES):
+                  for i in range(num_features):
                       data[f"f{i}"] = [float(i*j) for j in range(max_entities)]
                   df = pd.DataFrame(data)
                   df["event_timestamp"] = pd.Timestamp.now()
@@ -98,57 +93,135 @@ spec:
                   
                   source = FileSource(path=f"{repo}/data.parquet", timestamp_field="event_timestamp")
                   entity = Entity(name="user_id", join_keys=["user_id"])
-                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(NUM_FEATURES)]
+                  schema = [Field(name=f"f{i}", dtype=Float64) for i in range(num_features)]
                   fv = FeatureView(name="fv", entities=[entity], schema=schema, source=source, ttl=timedelta(days=1))
                   
                   fs = FeatureStore(repo_path=repo)
                   fs.apply([entity, fv])
                   fs.materialize(start_date=datetime.now()-timedelta(days=1), end_date=datetime.now())
                   fs.refresh_registry()
+                  return fs
+              
+              def run_benchmark(fs, num_features, num_entities, iterations, warmup, sla, scenario, optimizations):
+                  """Run benchmark for given configuration"""
+                  features = [f"fv:f{i}" for i in range(num_features)]
+                  rows = [{"user_id": f"user_{i}"} for i in range(num_entities)]
                   
-                  features = [f"fv:f{i}" for i in range(NUM_FEATURES)]
-                  results = []
+                  for _ in range(warmup):
+                      fs.get_online_features(features=features, entity_rows=rows)
+                  
+                  times = []
+                  for _ in range(iterations):
+                      start = time.perf_counter()
+                      fs.get_online_features(features=features, entity_rows=rows)
+                      times.append((time.perf_counter()-start)*1000)
+                  times.sort()
+                  
+                  p99_idx = int(len(times)*0.99)
+                  return Result(
+                      STORE, scenario, num_features, num_entities,
+                      times[len(times)//2], times[int(len(times)*0.95)], times[p99_idx],
+                      statistics.mean(times), min(times), max(times),
+                      statistics.stdev(times) if len(times) > 1 else 0,
+                      times[p99_idx] < sla, optimizations
+                  )
+              
+              def run_entity_scaling():
+                  """Scenario 1: Fixed features, vary entities"""
+                  repo = "/tmp/feast_repo"
+                  ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
+                  WARMUP = int(os.environ.get("WARMUP", "10"))
+                  SLA = float(os.environ.get("SLA_P99_MS", "60"))
+                  FIXED_FEATURES = int(os.environ.get("FIXED_FEATURES", "200"))
+                  ENTITY_COUNTS = [int(x) for x in os.environ.get("ENTITY_COUNTS", "1,10,50,100,200,500").split(",")]
+                  
                   optimizations = ["cache_ttl=0", "entity_key_v3", f"iter={ITERATIONS}"]
+                  max_entities = max(ENTITY_COUNTS) + 100
                   
-                  print("="*70)
-                  print("SQLITE BENCHMARK (OPTIMIZED) - local baseline")
-                  print(f"Features: {NUM_FEATURES} | Iterations: {ITERATIONS} | Warmup: {WARMUP}")
+                  print("\n" + "="*70)
+                  print(f"SQLITE - ENTITY SCALING")
+                  print(f"Fixed Features: {FIXED_FEATURES} | Varying Entities: {ENTITY_COUNTS}")
+                  print(f"Iterations: {ITERATIONS} | Warmup: {WARMUP} | SLA: {SLA}ms")
                   print("="*70)
                   
-                  for n in ENTITIES:
-                      rows = [{"user_id": f"user_{i}"} for i in range(n)]
-                      for _ in range(WARMUP):
-                          fs.get_online_features(features=features, entity_rows=rows)
-                      
-                      times = []
-                      for _ in range(ITERATIONS):
-                          start = time.perf_counter()
-                          fs.get_online_features(features=features, entity_rows=rows)
-                          times.append((time.perf_counter()-start)*1000)
-                      times.sort()
-                      
-                      p99_idx = int(len(times)*0.99)
-                      r = Result("sqlite", NUM_FEATURES, n, times[len(times)//2], times[int(len(times)*0.95)],
-                                 times[p99_idx], statistics.mean(times), min(times), max(times),
-                                 statistics.stdev(times) if len(times) > 1 else 0, times[p99_idx] < SLA, optimizations)
+                  fs = setup_feast(repo, FIXED_FEATURES, max_entities)
+                  results = []
+                  
+                  for n_entities in ENTITY_COUNTS:
+                      r = run_benchmark(fs, FIXED_FEATURES, n_entities, ITERATIONS, WARMUP, SLA, "entity_scaling", optimizations)
                       results.append(r)
                       status = "PASS" if r.sla_pass else "FAIL"
-                      print(f"{n:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms | std={r.std_dev:5.1f}ms [{status}]")
+                      print(f"{n_entities:4d}e: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms | std={r.std_dev:5.1f}ms [{status}]")
                   
-                  os.makedirs("/results/sqlite", exist_ok=True)
-                  output = {"store": "sqlite", "timestamp": datetime.now().isoformat(),
-                            "config": {"features": NUM_FEATURES, "iterations": ITERATIONS, "warmup": WARMUP,
-                                       "sla_ms": SLA, "optimizations": optimizations},
-                            "latency": [asdict(r) for r in results]}
-                  with open("/results/sqlite/benchmark_results.json", "w") as f:
+                  out_dir = f"/results/{STORE}/entity_scaling"
+                  os.makedirs(out_dir, exist_ok=True)
+                  output = {
+                      "store": STORE, "scenario": "entity_scaling", "timestamp": datetime.now().isoformat(),
+                      "config": {"fixed_features": FIXED_FEATURES, "entity_counts": ENTITY_COUNTS,
+                                 "iterations": ITERATIONS, "warmup": WARMUP, "sla_ms": SLA, "optimizations": optimizations},
+                      "latency": [asdict(r) for r in results]
+                  }
+                  with open(f"{out_dir}/benchmark_results.json", "w") as f:
                       json.dump(output, f, indent=2)
                   
-                  print(f"\nSaved: /results/sqlite/benchmark_results.json")
                   passed = sum(1 for r in results if r.sla_pass)
-                  print(f"SLA Pass Rate: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
+                  print(f"Saved: {out_dir}/benchmark_results.json | SLA: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
+                  return results
+              
+              def run_feature_scaling():
+                  """Scenario 2: Fixed entities, vary features"""
+                  repo = "/tmp/feast_repo"
+                  ITERATIONS = int(os.environ.get("ITERATIONS", "100"))
+                  WARMUP = int(os.environ.get("WARMUP", "10"))
+                  SLA = float(os.environ.get("SLA_P99_MS", "60"))
+                  FIXED_ENTITIES = int(os.environ.get("FIXED_ENTITIES", "50"))
+                  FEATURE_COUNTS = [int(x) for x in os.environ.get("FEATURE_COUNTS", "5,25,50,100,150,200").split(",")]
+                  
+                  optimizations = ["cache_ttl=0", "entity_key_v3", f"iter={ITERATIONS}"]
+                  
+                  print("\n" + "="*70)
+                  print(f"SQLITE - FEATURE SCALING")
+                  print(f"Fixed Entities: {FIXED_ENTITIES} | Varying Features: {FEATURE_COUNTS}")
+                  print(f"Iterations: {ITERATIONS} | Warmup: {WARMUP} | SLA: {SLA}ms")
+                  print("="*70)
+                  
+                  results = []
+                  for n_features in FEATURE_COUNTS:
+                      fs = setup_feast(repo, n_features, FIXED_ENTITIES + 100)
+                      r = run_benchmark(fs, n_features, FIXED_ENTITIES, ITERATIONS, WARMUP, SLA, "feature_scaling", optimizations)
+                      results.append(r)
+                      status = "PASS" if r.sla_pass else "FAIL"
+                      print(f"{n_features:4d}f: p50={r.p50:7.1f}ms | p95={r.p95:7.1f}ms | p99={r.p99:7.1f}ms | std={r.std_dev:5.1f}ms [{status}]")
+                  
+                  out_dir = f"/results/{STORE}/feature_scaling"
+                  os.makedirs(out_dir, exist_ok=True)
+                  output = {
+                      "store": STORE, "scenario": "feature_scaling", "timestamp": datetime.now().isoformat(),
+                      "config": {"fixed_entities": FIXED_ENTITIES, "feature_counts": FEATURE_COUNTS,
+                                 "iterations": ITERATIONS, "warmup": WARMUP, "sla_ms": SLA, "optimizations": optimizations},
+                      "latency": [asdict(r) for r in results]
+                  }
+                  with open(f"{out_dir}/benchmark_results.json", "w") as f:
+                      json.dump(output, f, indent=2)
+                  
+                  passed = sum(1 for r in results if r.sla_pass)
+                  print(f"Saved: {out_dir}/benchmark_results.json | SLA: {passed}/{len(results)} ({100*passed/len(results):.0f}%)")
+                  return results
               
               if __name__ == "__main__":
-                  run()
+                  SCENARIOS = os.environ.get("SCENARIOS", "entity_scaling,feature_scaling").split(",")
+                  print(f"\n{'#'*70}")
+                  print(f"# SQLITE BENCHMARK - Running scenarios: {SCENARIOS}")
+                  print(f"{'#'*70}")
+                  
+                  if "entity_scaling" in SCENARIOS:
+                      run_entity_scaling()
+                  if "feature_scaling" in SCENARIOS:
+                      run_feature_scaling()
+                  
+                  print(f"\n{'#'*70}")
+                  print(f"# SQLITE BENCHMARK COMPLETE")
+                  print(f"{'#'*70}\n")
               PYTHON_EOF
       volumes:
         - name: results

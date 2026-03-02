@@ -3,31 +3,90 @@
 #===============================================================================
 # This file contains all configurable parameters for running benchmarks.
 # Edit this file instead of modifying the run_full_benchmark.sh script.
+#
+# USAGE:
+#   Single ref:    ./run_full_benchmark.sh
+#   Multi-ref:     ./run_full_benchmark.sh --compare
+#   Specific refs: ./run_full_benchmark.sh --refs "baseline,optimized"
 #===============================================================================
 
 #-------------------------------------------------------------------------------
-# Feast Package Source
+# Feast References (for comparison benchmarks)
 #-------------------------------------------------------------------------------
-feast:
-  # Option 1: PyPI release (default)
-  # source: pypi
-  # version: ">=0.40.0"
-  
-  # Option 2: Git reference (branch, tag, or commit)
-  source: git
-  git_url: "https://github.com/abhijeet-dhumal/feast.git"
-  git_ref: "perf/combined-optimizations"
-  extras: "redis,aws,postgres"
+# Define multiple feast versions to compare. Use --compare flag to run all.
+# Results stored in: results/{ref_name}/{store}/
+#
+references:
+  master:
+    description: "Official Feast master branch (latest development)"
+    source: git
+    git_url: "https://github.com/feast-dev/feast.git"
+    git_ref: "master"
+    
+  v0.60.0:
+    description: "Official Feast v0.60.0 release (Feb 2026)"
+    source: git
+    git_url: "https://github.com/feast-dev/feast.git"
+    git_ref: "v0.60.0"
+    
+  optimized:
+    description: "Performance optimizations branch"
+    source: git
+    git_url: "https://github.com/abhijeet-dhumal/feast.git"
+    git_ref: "perf/combined-optimizations"
+
+#-------------------------------------------------------------------------------
+# Default Reference (used when not in --compare mode)
+#-------------------------------------------------------------------------------
+default_ref: "optimized"
+
+#-------------------------------------------------------------------------------
+# Feast Extras (shared across all refs)
+#-------------------------------------------------------------------------------
+feast_extras: "redis,aws,postgres"
 
 #-------------------------------------------------------------------------------
 # Benchmark Parameters
 #-------------------------------------------------------------------------------
 benchmark:
+  # Default scenario (entity scaling)
   features: 200
   entities: [1, 10, 50, 100, 200, 500]
   iterations: 300
   warmup: 20
   sla_ms: 60
+
+#-------------------------------------------------------------------------------
+# Benchmark Scenarios
+#-------------------------------------------------------------------------------
+# Two scenarios for comprehensive performance analysis:
+#   1. entity_scaling: Fixed features (200), vary entities (1-500)
+#   2. feature_scaling: Fixed entities (50), vary features (5-200)
+#
+# SLA Target: 50 entities × 200 features @ 60ms p99
+#
+# USAGE:
+#   Both scenarios (default): ./run_full_benchmark.sh
+#   Entity scaling only:      ./run_full_benchmark.sh --scenario entity_scaling
+#   Feature scaling only:     ./run_full_benchmark.sh --scenario feature_scaling
+#
+scenarios:
+  entity_scaling:
+    description: "Fixed 200 features, varying entity counts (SLA target: 50 entities)"
+    features: 200
+    entities: [1, 10, 50, 100, 200, 500]
+    sla_entity_count: 50
+    output_suffix: "entity_scaling"
+    
+  feature_scaling:
+    description: "Fixed 50 entities, varying feature counts (SLA target: 200 features)"
+    entities: 50
+    features: [5, 25, 50, 100, 150, 200]
+    sla_feature_count: 200
+    output_suffix: "feature_scaling"
+
+# Default: run BOTH scenarios for complete SLA assessment
+default_scenario: "all"
 
 #-------------------------------------------------------------------------------
 # Store-Specific Configuration
@@ -126,7 +185,28 @@ kubernetes:
 #-------------------------------------------------------------------------------
 # Output Settings
 #-------------------------------------------------------------------------------
+# Directory structure:
+#   results/
+#   ├── {ref_name}/                       # Per-reference results (master, v0.60.0, optimized)
+#   │   ├── sqlite_entity_scaling/        # Store + scenario
+#   │   │   └── benchmark_results.json
+#   │   ├── sqlite_feature_scaling/
+#   │   ├── redis_entity_scaling/
+#   │   ├── redis_feature_scaling/
+#   │   ├── postgres_entity_scaling/
+#   │   ├── dynamodb_entity_scaling/
+#   │   └── charts/                       # Charts for this ref only
+#   └── comparison/                       # Cross-reference comparison (--compare mode)
+#       └── charts/
+#
 output:
   results_dir: "results"
-  charts_dir: "results/charts"
   generate_charts: true
+  generate_comparison: true      # Generate comparison charts in --compare mode
+
+#-------------------------------------------------------------------------------
+# Parallel Execution (--compare mode)
+#-------------------------------------------------------------------------------
+parallel:
+  max_concurrent_builds: 2       # Max parallel image builds
+  max_concurrent_jobs: 4         # Max parallel K8s jobs
