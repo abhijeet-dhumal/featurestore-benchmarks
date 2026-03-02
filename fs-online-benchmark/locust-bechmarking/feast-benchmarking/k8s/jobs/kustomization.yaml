@@ -7,4 +7,3 @@ resources:
   - postgres-job.yaml
   - dynamodb-job.yaml
   - profile-job.yaml
-  - collect-results.yaml

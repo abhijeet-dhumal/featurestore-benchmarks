@@ -17,7 +17,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark
-          image: python:3.11-slim
+          image: image-registry.openshift-image-registry.svc:5000/feast-benchmark/feast-benchmark:latest
           envFrom:
             - configMapRef:
                 name: benchmark-config
@@ -65,9 +65,7 @@ spec:
             - -c
             - |
               set -e
-              export HOME=/tmp
-              export PATH=$HOME/.local/bin:$PATH
-              pip install --user -q 'feast[aws,postgres]' 'psycopg[binary,pool]>=3.0.0' 'redis>=4.0.0' aiobotocore pandas numpy
+              export PYTHONUNBUFFERED=1
               
               cat > /tmp/deep_profile.py << 'DEEP_EOF'
               #!/usr/bin/env python3

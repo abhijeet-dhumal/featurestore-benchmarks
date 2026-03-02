@@ -17,7 +17,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark
-          image: python:3.11-slim
+          image: image-registry.openshift-image-registry.svc:5000/feast-benchmark/feast-benchmark:latest
           envFrom:
             - configMapRef:
                 name: benchmark-config
@@ -53,15 +53,9 @@ spec:
             - -c
             - |
               set -e
-              export HOME=/tmp
-              export PATH=$HOME/.local/bin:$PATH
               export PYTHONUNBUFFERED=1
               
-              echo "=== STEP 1/5: Installing dependencies ==="
-              pip install --user -q 'feast[aws]' aiobotocore pandas numpy
-              echo "✓ Dependencies installed"
-              
-              echo "=== STEP 2/5: Running benchmark ==="
+              echo "=== Running DynamoDB benchmark ==="
               python3 -u << 'PYTHON_EOF'
               """Optimized DynamoDB Benchmark with verbose progress."""
               import cProfile, pstats, io, json, os, shutil, statistics, time, sys

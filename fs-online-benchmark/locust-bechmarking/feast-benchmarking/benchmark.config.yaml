@@ -1,0 +1,132 @@
+#===============================================================================
+# Feast Benchmark Configuration
+#===============================================================================
+# This file contains all configurable parameters for running benchmarks.
+# Edit this file instead of modifying the run_full_benchmark.sh script.
+#===============================================================================
+
+#-------------------------------------------------------------------------------
+# Feast Package Source
+#-------------------------------------------------------------------------------
+feast:
+  # Option 1: PyPI release (default)
+  # source: pypi
+  # version: ">=0.40.0"
+  
+  # Option 2: Git reference (branch, tag, or commit)
+  source: git
+  git_url: "https://github.com/abhijeet-dhumal/feast.git"
+  git_ref: "perf/combined-optimizations"
+  extras: "redis,aws,postgres"
+
+#-------------------------------------------------------------------------------
+# Benchmark Parameters
+#-------------------------------------------------------------------------------
+benchmark:
+  features: 200
+  entities: [1, 10, 50, 100, 200, 500]
+  iterations: 300
+  warmup: 20
+  sla_ms: 60
+
+#-------------------------------------------------------------------------------
+# Store-Specific Configuration
+#-------------------------------------------------------------------------------
+# Each store has:
+#   - enabled: whether to run benchmark for this store
+#   - iterations/warmup: benchmark-specific settings
+#   - online_store: Feast feature_store.yaml online_store config
+#
+stores:
+  sqlite:
+    enabled: true
+    iterations: 200
+    warmup: 10
+    online_store:
+      type: sqlite
+      path: /tmp/feast_benchmark/online_store.db
+    
+  redis:
+    enabled: true
+    iterations: 300
+    warmup: 20
+    online_store:
+      type: redis
+      connection_string: "redis://redis.feast-benchmark.svc.cluster.local:6379"
+      # Redis tuning
+      key_ttl_seconds: 0           # 0 = no expiry
+      # password: ""               # Uncomment if auth enabled
+      # ssl: false
+      # ssl_cert_reqs: "required"  # For SSL: required, optional, none
+      
+  postgres:
+    enabled: true
+    iterations: 300
+    warmup: 25
+    online_store:
+      type: postgres
+      host: "postgres.feast-benchmark.svc.cluster.local"
+      port: 5432
+      database: "feast"
+      user: "feast"
+      password: "feast"
+      db_schema: "public"
+      # sslmode: "prefer"          # disable, allow, prefer, require, verify-ca, verify-full
+      # sslrootcert: ""            # Path to CA cert
+      # pool_size: 5               # Connection pool size
+      # max_overflow: 10           # Max connections beyond pool_size
+      
+  dynamodb:
+    enabled: true
+    iterations: 500
+    warmup: 30
+    online_store:
+      type: dynamodb
+      region: "eu-west-1"
+      table_name: "feast_benchmark"
+      # Performance tuning
+      batch_size: 100              # Items per batch read
+      consistent_reads: false      # Eventually consistent (faster) vs strongly consistent
+      # Connection tuning
+      max_pool_connections: 200    # Max HTTP connections in pool
+      keepalive_timeout: 60.0      # Seconds to keep connections alive
+      connect_timeout: 2           # Connection timeout (seconds)
+      read_timeout: 5              # Read timeout (seconds)
+      # Retry configuration
+      retry_mode: "adaptive"       # legacy, standard, adaptive
+      total_max_retry_attempts: 3
+      # endpoint_url: ""           # For local DynamoDB or custom endpoint
+      # Use aws-credentials secret for AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY
+
+#-------------------------------------------------------------------------------
+# Feast Registry Settings
+#-------------------------------------------------------------------------------
+registry:
+  registry_type: "file"
+  path: "/tmp/feast_benchmark/registry.pb"
+  cache_ttl_seconds: 0             # 0 = infinite cache (no refresh during benchmark)
+
+#-------------------------------------------------------------------------------
+# Entity Key Serialization
+#-------------------------------------------------------------------------------
+entity_key_serialization_version: 3  # Use v3 for better performance
+
+#-------------------------------------------------------------------------------
+# Kubernetes Settings
+#-------------------------------------------------------------------------------
+kubernetes:
+  namespace: "feast-benchmark"
+  image:
+    registry: "image-registry.openshift-image-registry.svc:5000"
+    repository: "feast-benchmark/feast-benchmark"
+    tag: "latest"
+  job_timeout: 1800
+  results_pvc: "benchmark-results"
+
+#-------------------------------------------------------------------------------
+# Output Settings
+#-------------------------------------------------------------------------------
+output:
+  results_dir: "results"
+  charts_dir: "results/charts"
+  generate_charts: true

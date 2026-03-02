@@ -11,19 +11,28 @@
 #   ./run_full_benchmark.sh [OPTIONS]
 #
 # OPTIONS:
-#   --stores <list>       Stores to benchmark (default: "sqlite redis postgres dynamodb")
-#   --namespace <ns>      Kubernetes namespace (default: feast-benchmark)
-#   --features <n>        Number of features (default: 200)
-#   --entities <list>     Entity counts to test (default: "1 10 50 100 200 500")
-#   --iterations <n>      Iterations per test (default: 100)
-#   --warmup <n>          Warmup iterations (default: 10)
-#   --timeout <s>         Job timeout in seconds (default: 900)
-#   --output-dir <dir>    Results output directory (default: results/cluster)
+#   --config <file>       Config file path (default: benchmark.config.yaml)
+#   --feast-git-ref <ref> Feast git reference (branch/tag/commit) - triggers rebuild
+#   --feast-git-url <url> Feast git repository URL
+#   --stores <list>       Stores to benchmark (default: from config)
+#   --namespace <ns>      Kubernetes namespace (default: from config)
+#   --features <n>        Number of features (default: from config)
+#   --entities <list>     Entity counts to test (default: from config)
+#   --iterations <n>      Iterations per test (default: from config)
+#   --warmup <n>          Warmup iterations (default: from config)
+#   --timeout <s>         Job timeout in seconds (default: from config)
+#   --output-dir <dir>    Results output directory (default: from config)
+#   --skip-build          Skip image build even if git ref specified
 #   --skip-k8s            Skip K8s jobs, run locally only (SQLite)
 #   --skip-charts         Skip chart generation
 #   --dry-run             Show what would be done without executing
 #   --verbose             Enable verbose output
 #   --help                Show this help message
+#
+# CONFIG FILE:
+#   The config file (benchmark.config.yaml) contains all default settings
+#   including feast source, database connections, and benchmark parameters.
+#   Command-line arguments override config file settings.
 #
 # PREREQUISITES:
 #   - oc/kubectl CLI configured with cluster access
@@ -32,14 +41,20 @@
 #   - AWS credentials secret (for DynamoDB)
 #
 # EXAMPLES:
-#   # Run all stores with defaults
+#   # Run with defaults from config file
 #   ./run_full_benchmark.sh
+#
+#   # Run with custom feast branch (triggers rebuild)
+#   ./run_full_benchmark.sh --feast-git-ref perf/my-optimization
+#
+#   # Run with custom config file
+#   ./run_full_benchmark.sh --config production.config.yaml
 #
 #   # Run only Redis and Postgres
 #   ./run_full_benchmark.sh --stores "redis postgres"
 #
-#   # Custom entity counts
-#   ./run_full_benchmark.sh --entities "1 50 100 500"
+#   # Use git ref without rebuilding (use existing image)
+#   ./run_full_benchmark.sh --feast-git-ref my-branch --skip-build
 #
 #   # Dry run to see commands
 #   ./run_full_benchmark.sh --dry-run --verbose
@@ -49,16 +64,20 @@
 set -euo pipefail
 
 #-------------------------------------------------------------------------------
-# Configuration Defaults
+# Configuration Defaults (overridden by config file, then CLI args)
 #-------------------------------------------------------------------------------
-STORES="sqlite redis postgres dynamodb"
-NAMESPACE="feast-benchmark"
-FEATURES=200
-ENTITIES="1 10 50 100 200 500"
-ITERATIONS=300      # Increased for reliability (CV < 15%)
-WARMUP=20           # More warmup for stability
-TIMEOUT=1800        # Increased for higher iterations
-OUTPUT_DIR="results"
+CONFIG_FILE=""
+FEAST_GIT_REF=""
+FEAST_GIT_URL=""
+STORES=""
+NAMESPACE=""
+FEATURES=""
+ENTITIES=""
+ITERATIONS=""
+WARMUP=""
+TIMEOUT=""
+OUTPUT_DIR=""
+SKIP_BUILD=false
 SKIP_K8S=false
 SKIP_CHARTS=false
 DRY_RUN=false
@@ -67,7 +86,7 @@ VERBOSE=false
 # Script directory (for relative paths)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOBS_DIR="${SCRIPT_DIR}/k8s/jobs"
-CHARTS_OUTPUT="${SCRIPT_DIR}/results/charts"
+BUILD_DIR="${SCRIPT_DIR}/k8s/build"
 
 # Kubernetes CLI (oc or kubectl)
 K8S_CLI="oc"
@@ -109,7 +128,7 @@ log_section() {
 # Help
 #-------------------------------------------------------------------------------
 show_help() {
-    head -50 "$0" | grep -E "^#" | sed 's/^#//' | sed 's/^!/#!/'
+    head -60 "$0" | grep -E "^#" | sed 's/^#//' | sed 's/^!/#!/'
     exit 0
 }
 
@@ -119,22 +138,124 @@ show_help() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --stores)       STORES="$2"; shift 2 ;;
-            --namespace)    NAMESPACE="$2"; shift 2 ;;
-            --features)     FEATURES="$2"; shift 2 ;;
-            --entities)     ENTITIES="$2"; shift 2 ;;
-            --iterations)   ITERATIONS="$2"; shift 2 ;;
-            --warmup)       WARMUP="$2"; shift 2 ;;
-            --timeout)      TIMEOUT="$2"; shift 2 ;;
-            --output-dir)   OUTPUT_DIR="$2"; shift 2 ;;
-            --skip-k8s)     SKIP_K8S=true; shift ;;
-            --skip-charts)  SKIP_CHARTS=true; shift ;;
-            --dry-run)      DRY_RUN=true; shift ;;
-            --verbose)      VERBOSE=true; shift ;;
-            --help|-h)      show_help ;;
-            *)              log_error "Unknown option: $1"; exit 1 ;;
+            --config)        CONFIG_FILE="$2"; shift 2 ;;
+            --feast-git-ref) FEAST_GIT_REF="$2"; shift 2 ;;
+            --feast-git-url) FEAST_GIT_URL="$2"; shift 2 ;;
+            --stores)        STORES="$2"; shift 2 ;;
+            --namespace)     NAMESPACE="$2"; shift 2 ;;
+            --features)      FEATURES="$2"; shift 2 ;;
+            --entities)      ENTITIES="$2"; shift 2 ;;
+            --iterations)    ITERATIONS="$2"; shift 2 ;;
+            --warmup)        WARMUP="$2"; shift 2 ;;
+            --timeout)       TIMEOUT="$2"; shift 2 ;;
+            --output-dir)    OUTPUT_DIR="$2"; shift 2 ;;
+            --skip-build)    SKIP_BUILD=true; shift ;;
+            --skip-k8s)      SKIP_K8S=true; shift ;;
+            --skip-charts)   SKIP_CHARTS=true; shift ;;
+            --dry-run)       DRY_RUN=true; shift ;;
+            --verbose)       VERBOSE=true; shift ;;
+            --help|-h)       show_help ;;
+            *)               log_error "Unknown option: $1"; exit 1 ;;
         esac
     done
+}
+
+#-------------------------------------------------------------------------------
+# Config File Loading
+#-------------------------------------------------------------------------------
+load_config() {
+    local config_path="$1"
+    
+    if [[ ! -f "$config_path" ]]; then
+        log_warn "Config file not found: $config_path (using defaults)"
+        return 0
+    fi
+    
+    log_info "Loading config from: $config_path"
+    
+    # Parse YAML config using Python (handles complex YAML safely)
+    local config_json
+    config_json=$(python3 << PYTHON_EOF
+import yaml
+import json
+import sys
+
+try:
+    with open('$config_path', 'r') as f:
+        config = yaml.safe_load(f)
+    print(json.dumps(config))
+except Exception as e:
+    print(json.dumps({"error": str(e)}), file=sys.stderr)
+    sys.exit(1)
+PYTHON_EOF
+)
+
+    # Extract values from config (only if not already set by CLI)
+    if [[ -z "$FEAST_GIT_URL" ]]; then
+        FEAST_GIT_URL=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('git_url',''))" 2>/dev/null || echo "")
+    fi
+    if [[ -z "$FEAST_GIT_REF" ]]; then
+        local source=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('source',''))" 2>/dev/null || echo "")
+        if [[ "$source" == "git" ]]; then
+            FEAST_GIT_REF=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('feast',{}).get('git_ref',''))" 2>/dev/null || echo "")
+        fi
+    fi
+    if [[ -z "$NAMESPACE" ]]; then
+        NAMESPACE=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('namespace','feast-benchmark'))" 2>/dev/null || echo "feast-benchmark")
+    fi
+    if [[ -z "$FEATURES" ]]; then
+        FEATURES=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('features',200))" 2>/dev/null || echo "200")
+    fi
+    if [[ -z "$ENTITIES" ]]; then
+        ENTITIES=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(' '.join(map(str,c.get('benchmark',{}).get('entities',[1,10,50,100,200,500]))))" 2>/dev/null || echo "1 10 50 100 200 500")
+    fi
+    if [[ -z "$ITERATIONS" ]]; then
+        ITERATIONS=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('iterations',300))" 2>/dev/null || echo "300")
+    fi
+    if [[ -z "$WARMUP" ]]; then
+        WARMUP=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('benchmark',{}).get('warmup',20))" 2>/dev/null || echo "20")
+    fi
+    if [[ -z "$TIMEOUT" ]]; then
+        TIMEOUT=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('kubernetes',{}).get('job_timeout',1800))" 2>/dev/null || echo "1800")
+    fi
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        OUTPUT_DIR=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('output',{}).get('results_dir','results'))" 2>/dev/null || echo "results")
+    fi
+    if [[ -z "$STORES" ]]; then
+        # Build stores list from enabled stores in config
+        STORES=$(echo "$config_json" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+stores = c.get('stores', {})
+enabled = [s for s in ['sqlite','redis','postgres','dynamodb'] if stores.get(s,{}).get('enabled',True)]
+print(' '.join(enabled))
+" 2>/dev/null || echo "sqlite redis postgres dynamodb")
+    fi
+    
+    # Store config JSON for later use (store-specific settings)
+    CONFIG_JSON="$config_json"
+    CHARTS_OUTPUT=$(echo "$config_json" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('output',{}).get('charts_dir','results/charts'))" 2>/dev/null || echo "results/charts")
+    CHARTS_OUTPUT="${SCRIPT_DIR}/${CHARTS_OUTPUT}"
+    
+    log_verbose "Config loaded: NAMESPACE=$NAMESPACE, STORES=$STORES"
+}
+
+# Get store-specific config value
+get_store_config() {
+    local store="$1"
+    local key="$2"
+    local default="$3"
+    
+    if [[ -n "${CONFIG_JSON:-}" ]]; then
+        echo "$CONFIG_JSON" | python3 -c "
+import sys, json
+c = json.load(sys.stdin)
+val = c.get('stores',{}).get('$store',{}).get('$key')
+print(val if val is not None else '$default')
+" 2>/dev/null || echo "$default"
+    else
+        echo "$default"
+    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -213,9 +334,71 @@ setup_local_env() {
     fi
     
     log_info "Installing dependencies..."
-    run_cmd "./.venv/bin/pip install -q feast matplotlib numpy pandas"
+    run_cmd "./.venv/bin/pip install -q feast matplotlib numpy pandas pyyaml"
     
     log_success "Local environment ready"
+}
+
+#-------------------------------------------------------------------------------
+# Image Build
+#-------------------------------------------------------------------------------
+build_feast_image() {
+    local git_ref="$1"
+    local git_url="${2:-https://github.com/feast-dev/feast.git}"
+    
+    log_section "Building Feast Image"
+    log_info "Git URL: $git_url"
+    log_info "Git Ref: $git_ref"
+    
+    # Check build resources exist
+    if [[ ! -f "${BUILD_DIR}/imagestream.yaml" ]] || [[ ! -f "${BUILD_DIR}/buildconfig.yaml" ]]; then
+        log_error "Build resources not found in ${BUILD_DIR}"
+        log_info "Creating build resources..."
+        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/imagestream.yaml -n $NAMESPACE"
+        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/buildconfig.yaml -n $NAMESPACE"
+    fi
+    
+    # Ensure ImageStream and BuildConfig exist
+    if ! $K8S_CLI get imagestream feast-benchmark -n "$NAMESPACE" &>/dev/null; then
+        log_info "Creating ImageStream..."
+        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/imagestream.yaml -n $NAMESPACE"
+    fi
+    
+    if ! $K8S_CLI get buildconfig feast-benchmark -n "$NAMESPACE" &>/dev/null; then
+        log_info "Creating BuildConfig..."
+        run_cmd "$K8S_CLI apply -f ${BUILD_DIR}/buildconfig.yaml -n $NAMESPACE"
+    fi
+    
+    # Start build with build args
+    log_info "Starting build (this may take 5-10 minutes)..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} Would start build with FEAST_GIT_REF=$git_ref FEAST_GIT_URL=$git_url"
+        return 0
+    fi
+    
+    # Create build with env overrides for ARGs
+    $K8S_CLI start-build feast-benchmark -n "$NAMESPACE" \
+        --from-dir="$SCRIPT_DIR" \
+        --build-arg="FEAST_SOURCE=git" \
+        --build-arg="FEAST_GIT_URL=$git_url" \
+        --build-arg="FEAST_GIT_REF=$git_ref" \
+        --follow
+    
+    # Verify build succeeded
+    local latest_build
+    latest_build=$($K8S_CLI get builds -n "$NAMESPACE" -l buildconfig=feast-benchmark --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+    
+    local build_status
+    build_status=$($K8S_CLI get build "$latest_build" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    
+    if [[ "$build_status" == "Complete" ]]; then
+        log_success "Build completed successfully: $latest_build"
+    else
+        log_error "Build failed with status: $build_status"
+        log_info "Check build logs: $K8S_CLI logs build/$latest_build -n $NAMESPACE"
+        exit 1
+    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -304,15 +487,9 @@ run_local_benchmark() {
     local entities_arg=$(echo "$ENTITIES" | tr ' ' ' ')
     local output_path="${SCRIPT_DIR}/${OUTPUT_DIR}/${store}"
     
-    # Store-specific iterations for reliability (can be overridden by CLI)
-    local store_iterations=$ITERATIONS
-    local store_warmup=$WARMUP
-    case $store in
-        sqlite)   store_iterations=${ITERATIONS:-200}; store_warmup=${WARMUP:-10} ;;
-        redis)    store_iterations=${ITERATIONS:-300}; store_warmup=${WARMUP:-20} ;;
-        postgres) store_iterations=${ITERATIONS:-300}; store_warmup=${WARMUP:-25} ;;
-        dynamodb) store_iterations=${ITERATIONS:-500}; store_warmup=${WARMUP:-30} ;;
-    esac
+    # Get store-specific iterations/warmup from config (with defaults)
+    local store_iterations=$(get_store_config "$store" "iterations" "$ITERATIONS")
+    local store_warmup=$(get_store_config "$store" "warmup" "$WARMUP")
     
     log_info "Store $store: $store_iterations iterations, $store_warmup warmup"
     
@@ -368,6 +545,10 @@ print_summary() {
     
     echo ""
     echo "Configuration:"
+    echo "  Config:      $CONFIG_FILE"
+    if [[ -n "$FEAST_GIT_REF" ]]; then
+        echo "  Feast:       ${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}@$FEAST_GIT_REF"
+    fi
     echo "  Features:    $FEATURES"
     echo "  Entities:    $ENTITIES"
     echo "  Iterations:  $ITERATIONS"
@@ -419,8 +600,21 @@ else:
 main() {
     parse_args "$@"
     
+    # Load config file (defaults to benchmark.config.yaml)
+    if [[ -z "$CONFIG_FILE" ]]; then
+        CONFIG_FILE="${SCRIPT_DIR}/benchmark.config.yaml"
+    fi
+    load_config "$CONFIG_FILE"
+    
+    # Set CHARTS_OUTPUT if not set by config
+    CHARTS_OUTPUT="${CHARTS_OUTPUT:-${SCRIPT_DIR}/results/charts}"
+    
     log_header "Feast Online Store Benchmark"
     echo ""
+    echo "  Config:     $CONFIG_FILE"
+    if [[ -n "$FEAST_GIT_REF" ]]; then
+        echo "  Feast:      ${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}@$FEAST_GIT_REF"
+    fi
     echo "  Stores:     $STORES"
     echo "  Features:   $FEATURES"
     echo "  Entities:   $ENTITIES"
@@ -432,6 +626,11 @@ main() {
     
     check_prerequisites
     setup_local_env
+    
+    # Build image if git ref specified and not skipping build
+    if [[ -n "$FEAST_GIT_REF" ]] && [[ "$SKIP_BUILD" != "true" ]]; then
+        build_feast_image "$FEAST_GIT_REF" "${FEAST_GIT_URL:-https://github.com/feast-dev/feast.git}"
+    fi
     
     # Track which stores to fetch from K8s
     local k8s_stores=""

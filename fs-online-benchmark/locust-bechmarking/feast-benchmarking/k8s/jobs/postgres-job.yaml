@@ -17,7 +17,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark
-          image: python:3.11-slim
+          image: image-registry.openshift-image-registry.svc:5000/feast-benchmark/feast-benchmark:latest
           envFrom:
             - configMapRef:
                 name: benchmark-config
@@ -47,15 +47,9 @@ spec:
             - -c
             - |
               set -e
-              export HOME=/tmp
-              export PATH=$HOME/.local/bin:$PATH
               export PYTHONUNBUFFERED=1
               
-              echo "=== STEP 1/5: Installing dependencies ==="
-              pip install --user -q feast 'psycopg[binary,pool]>=3.0.0' pandas numpy
-              echo "✓ Dependencies installed"
-              
-              echo "=== STEP 2/5: Running benchmark ==="
+              echo "=== Running Postgres benchmark ==="
               python3 -u << 'PYTHON_EOF'
               """Optimized Postgres Benchmark with verbose progress."""
               import cProfile, pstats, io, json, os, shutil, statistics, time, sys

@@ -17,7 +17,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark
-          image: python:3.11-slim
+          image: image-registry.openshift-image-registry.svc:5000/feast-benchmark/feast-benchmark:latest
           envFrom:
             - configMapRef:
                 name: benchmark-config
@@ -36,9 +36,7 @@ spec:
             - -c
             - |
               set -e
-              export HOME=/tmp
-              export PATH=$HOME/.local/bin:$PATH
-              pip install --user -q feast pandas numpy
+              export PYTHONUNBUFFERED=1
               
               python3 << 'PYTHON_EOF'
               """Optimized SQLite Benchmark (local dev baseline)"""

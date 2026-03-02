@@ -1,7 +1,7 @@
 # Feast Benchmark Dependencies
 
-# Core Feast
-feast[redis,aws]>=0.40.0
+# Core Feast (custom branch with performance optimizations)
+feast[redis,aws] @ git+https://github.com/abhijeet-dhumal/feast.git@perf/combined-optimizations#subdirectory=sdk/python
 
 # Data processing
 pandas>=2.0.0
